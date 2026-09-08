@@ -126,13 +126,13 @@ if ($page === 'api') {
             $d = json_decode(file_get_contents('php://input'), true);
             if (empty($d['full_name'])) { echo json_encode(['error'=>'Name required']); break; }
             if (!empty($d['id'])) {
-                q("UPDATE employees SET full_name=?,date_of_birth=?,gender=?,phone=?,email=?,address=?,emergency_contact=?,emergency_phone=?,department_id=?,position_id=?,supervisor_id=?,employment_type=?,start_date=?,end_date=?,work_location=?,shift=?,status=?,employee_code=? WHERE id=?",
-                'ssssssssiiiisssssi', [$d['full_name'],$d['date_of_birth']??null,$d['gender']??null,$d['phone']??null,$d['email']??null,$d['address']??null,$d['emergency_contact']??null,$d['emergency_phone']??null,$d['department_id']??null,$d['position_id']??null,$d['supervisor_id']??null,$d['employment_type']??null,$d['start_date']??null,$d['end_date']??null,$d['work_location']??null,$d['shift']??null,$d['status']??'Active',$d['employee_code']??'',$d['id']]);
+                q("UPDATE employees SET full_name=?,date_of_birth=?,gender=?,marital_status=?,spouse_name=?,spouse_mobile=?,phone=?,email=?,ssnit=?,last_education=?,address=?,career_objective=?,emergency_contact=?,emergency_relationship=?,emergency_phone=?,emergency_email=?,emergency_address=?,emergency_date=?,nationality=?,department_id=?,position_id=?,supervisor_id=?,employment_type=?,start_date=?,end_date=?,work_location=?,shift=?,bank_account_name=?,bank_name=?,bank_branch=?,bank_branch_code=?,bank_account_number=?,momo_name=?,momo_network=?,momo_number=?,status=?,employee_code=? WHERE id=?",
+                'ssssssssssssssssssiiisssssssssssssss', [$d['full_name'],$d['date_of_birth']??null,$d['gender']??null,$d['marital_status']??null,$d['spouse_name']??null,$d['spouse_mobile']??null,$d['phone']??null,$d['email']??null,$d['ssnit']??null,$d['last_education']??null,$d['address']??null,$d['career_objective']??null,$d['emergency_contact']??null,$d['emergency_relationship']??null,$d['emergency_phone']??null,$d['emergency_email']??null,$d['emergency_address']??null,$d['emergency_date']??null,$d['nationality']??null,$d['department_id']??null,$d['position_id']??null,$d['supervisor_id']??null,$d['employment_type']??null,$d['start_date']??null,$d['end_date']??null,$d['work_location']??null,$d['shift']??null,$d['bank_account_name']??null,$d['bank_name']??null,$d['bank_branch']??null,$d['bank_branch_code']??null,$d['bank_account_number']??null,$d['momo_name']??null,$d['momo_network']??null,$d['momo_number']??null,$d['status']??'Active',$d['employee_code']??'',$d['id']]);
                 audit('Updated', 'Employee', $d['full_name']);
                 echo json_encode(['ok'=>true]);
             } else {
-                q("INSERT INTO employees (employee_code,full_name,date_of_birth,gender,phone,email,address,emergency_contact,emergency_phone,department_id,position_id,supervisor_id,employment_type,start_date,end_date,work_location,shift,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                'ssssssssiiiissssss', [$d['employee_code']??'EMP-'.rand(1000,9999),$d['full_name'],$d['date_of_birth']??null,$d['gender']??null,$d['phone']??null,$d['email']??null,$d['address']??null,$d['emergency_contact']??null,$d['emergency_phone']??null,$d['department_id']??null,$d['position_id']??null,$d['supervisor_id']??null,$d['employment_type']??null,$d['start_date']??null,$d['end_date']??null,$d['work_location']??null,$d['shift']??null,$d['status']??'Active']);
+                q("INSERT INTO employees (employee_code,photo,full_name,date_of_birth,gender,marital_status,spouse_name,spouse_mobile,phone,email,ssnit,last_education,address,career_objective,emergency_contact,emergency_relationship,emergency_phone,emergency_email,emergency_address,emergency_date,nationality,department_id,position_id,supervisor_id,employment_type,start_date,end_date,work_location,shift,bank_account_name,bank_name,bank_branch,bank_branch_code,bank_account_number,momo_name,momo_network,momo_number,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                'sssssssssssssssssssiiissssssssssssssss', [$d['employee_code']??'EMP-'.rand(1000,9999),$d['photo']??null,$d['full_name'],$d['date_of_birth']??null,$d['gender']??null,$d['marital_status']??null,$d['spouse_name']??null,$d['spouse_mobile']??null,$d['phone']??null,$d['email']??null,$d['ssnit']??null,$d['last_education']??null,$d['address']??null,$d['career_objective']??null,$d['emergency_contact']??null,$d['emergency_relationship']??null,$d['emergency_phone']??null,$d['emergency_email']??null,$d['emergency_address']??null,$d['emergency_date']??null,$d['nationality']??null,$d['department_id']??null,$d['position_id']??null,$d['supervisor_id']??null,$d['employment_type']??null,$d['start_date']??null,$d['end_date']??null,$d['work_location']??null,$d['shift']??null,$d['bank_account_name']??null,$d['bank_name']??null,$d['bank_branch']??null,$d['bank_branch_code']??null,$d['bank_account_number']??null,$d['momo_name']??null,$d['momo_network']??null,$d['momo_number']??null,$d['status']??'Active']);
                 audit('Created', 'Employee', $d['full_name']);
                 echo json_encode(['ok'=>true]);
             }
@@ -492,37 +492,53 @@ textarea{resize:vertical;min-height:80px;}
 
 <!-- EMPLOYEE MODAL -->
 <div class="modal-bg" id="empModal">
-  <div class="modal clay">
+  <div class="modal clay" style="max-width:860px">
     <button class="x" onclick="closeModal('empModal')"><i class="fa-solid fa-xmark"></i></button>
     <h2 id="empModalTitle">New Employee</h2>
     <div class="tabs" id="empTabs">
       <button class="tab active" onclick="empStep(1,this)">1 · Personal</button>
-      <button class="tab" onclick="empStep(2,this)">2 · Employment</button>
-      <button class="tab" onclick="empStep(3,this)">3 · Documents</button>
-      <button class="tab" onclick="empStep(4,this)">4 · Account</button>
+      <button class="tab" onclick="empStep(2,this)">2 · Job Info</button>
+      <button class="tab" onclick="empStep(3,this)">3 · Bank</button>
+      <button class="tab" onclick="empStep(4,this)">4 · MoMo</button>
+      <button class="tab" onclick="empStep(5,this)">5 · Emergency</button>
+      <button class="tab" onclick="empStep(6,this)">6 · CV</button>
+      <button class="tab" onclick="empStep(7,this)">7 · Documents</button>
     </div>
     <form id="empForm" class="form-grid" onsubmit="saveEmp(event)">
       <input type="hidden" name="id" id="e_id">
-      <!-- Step1 -->
+
+      <!-- 1. PERSONAL -->
       <div class="step" data-step="1">
         <div class="form-grid">
-          <div><label>Employee ID</label><input name="employee_code" id="e_code" placeholder="EMP-001"></div>
+          <div class="full"><label>Picture</label>
+            <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+              <img id="photoPreview" src="" style="width:70px;height:70px;border-radius:16px;object-fit:cover;background:#fff;box-shadow:var(--inner);display:none">
+              <input type="file" id="photoFile" accept="image/*" style="flex:1;min-width:200px">
+              <button type="button" class="btn ghost" onclick="photoFromCamera()"><i class="fa-solid fa-camera"></i> Camera</button>
+            </div>
+          </div>
           <div><label>Full Name *</label><input name="full_name" id="e_name" required></div>
-          <div><label>Date of Birth</label><input type="date" name="date_of_birth" id="e_dob"></div>
-          <div><label>Gender</label><select name="gender" id="e_gender"><option>Male</option><option>Female</option><option>Other</option></select></div>
-          <div><label>Phone</label><input name="phone" id="e_phone"></div>
+          <div><label>Address</label><textarea name="address" id="e_addr"></textarea></div>
+          <div><label>Mobile Phone</label><input name="phone" id="e_phone"></div>
           <div><label>Email</label><input type="email" name="email" id="e_email"></div>
-          <div class="full"><label>Address</label><textarea name="address" id="e_addr"></textarea></div>
-          <div><label>Emergency Contact</label><input name="emergency_contact" id="e_econtact"></div>
-          <div><label>Emergency Phone</label><input name="emergency_phone" id="e_ephone"></div>
+          <div><label>SSNIT</label><input name="ssnit" id="e_ssnit"></div>
+          <div><label>Last Education</label><input name="last_education" id="e_edu"></div>
+          <div><label>Birthday</label><input type="date" name="date_of_birth" id="e_dob"></div>
+          <div><label>Marital Status</label><select name="marital_status" id="e_marital"><option>Single</option><option>Married</option><option>Divorced</option><option>Widowed</option></select></div>
+          <div><label>Spouse's Name</label><input name="spouse_name" id="e_spouse"></div>
+          <div><label>Spouse's Mobile</label><input name="spouse_mobile" id="e_spousemob"></div>
+          <div><label>Gender</label><select name="gender" id="e_gender"><option>Male</option><option>Female</option><option>Other</option></select></div>
+          <div><label>Nationality</label><input name="nationality" id="e_nation"></div>
         </div>
       </div>
-      <!-- Step2 -->
+
+      <!-- 2. JOB INFO -->
       <div class="step hidden" data-step="2">
         <div class="form-grid">
-          <div><label>Department</label><select name="department_id" id="e_dept"></select></div>
+          <div><label>Employee ID</label><input name="employee_code" id="e_code" placeholder="EMP-001"></div>
           <div><label>Position</label><select name="position_id" id="e_pos"></select></div>
           <div><label>Supervisor</label><select name="supervisor_id" id="e_sup"></select></div>
+          <div><label>Department</label><select name="department_id" id="e_dept"></select></div>
           <div><label>Employment Type</label><select name="employment_type" id="e_etype"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Probation</option></select></div>
           <div><label>Start Date</label><input type="date" name="start_date" id="e_sdate"></div>
           <div><label>End Date</label><input type="date" name="end_date" id="e_edate"></div>
@@ -531,24 +547,69 @@ textarea{resize:vertical;min-height:80px;}
           <div><label>Status</label><select name="status" id="e_status"><option>Active</option><option>On Leave</option><option>Probation</option><option>Suspended</option><option>Terminated</option></select></div>
         </div>
       </div>
-      <!-- Step3 -->
+
+      <!-- 3. BANK -->
       <div class="step hidden" data-step="3">
+        <h3 style="margin-bottom:16px;color:var(--violet)">Bank Account Information</h3>
         <div class="form-grid">
-          <div class="full"><label>Document Type</label><select id="docType"><option>Employment Contract</option><option>Identification</option><option>Certificate</option><option>Warning Letter</option><option>Training Cert</option><option>Other</option></select></div>
+          <div><label>Account Name</label><input name="bank_account_name" id="e_bacct"></div>
+          <div><label>Name of Bank</label><input name="bank_name" id="e_bank"></div>
+          <div><label>Account Branch</label><input name="bank_branch" id="e_bbranch"></div>
+          <div><label>Branch Code</label><input name="bank_branch_code" id="e_bcode"></div>
+          <div><label>Account Number</label><input name="bank_account_number" id="e_bno"></div>
+        </div>
+      </div>
+
+      <!-- 4. MOMO -->
+      <div class="step hidden" data-step="4">
+        <h3 style="margin-bottom:16px;color:var(--violet)">MoMo Account Information</h3>
+        <div class="form-grid">
+          <div><label>Account Name</label><input name="momo_name" id="e_mname"></div>
+          <div><label>Account Number</label><input name="momo_number" id="e_mno"></div>
+          <div><label>Network</label><select name="momo_network" id="e_mnet"><option>MTN Mobile Money</option><option>Vodafone Cash</option><option>AirtelTigo Money</option><option>Other</option></select></div>
+        </div>
+      </div>
+
+      <!-- 5. EMERGENCY -->
+      <div class="step hidden" data-step="5">
+        <h3 style="margin-bottom:16px;color:var(--violet)">Emergency Contact Information</h3>
+        <div class="form-grid">
+          <div><label>Full Name</label><input name="emergency_contact" id="e_econtact"></div>
+          <div><label>Relationship</label><input name="emergency_relationship" id="e_erel"></div>
+          <div class="full"><label>Address</label><input name="emergency_address" id="e_eaddr"></div>
+          <div><label>Email</label><input type="email" name="emergency_email" id="e_eemail"></div>
+          <div><label>Mobile Phone</label><input name="emergency_phone" id="e_ephone"></div>
+          <div><label>Date</label><input type="date" name="emergency_date" id="e_edate2"></div>
+        </div>
+      </div>
+
+      <!-- 6. CV -->
+      <div class="step hidden" data-step="6">
+        <h3 style="margin-bottom:16px;color:var(--violet)">Curriculum Vitae</h3>
+        <div class="form-grid">
+          <div class="full"><label>Career Objective</label><textarea name="career_objective" id="e_career"></textarea></div>
+          <div class="full"><label>Education Background (Institution · Qualification · Year)</label><div id="cvEduRows"></div><button type="button" class="btn ghost" onclick="addCVRow('cvEduRows')"><i class="fa-solid fa-plus"></i> Add Education</button></div>
+          <div class="full"><label>Work Experience (Company · Position · Period · Duties)</label><div id="cvWorkRows"></div><button type="button" class="btn ghost" onclick="addCVRow('cvWorkRows')"><i class="fa-solid fa-plus"></i> Add Experience</button></div>
+          <div class="full"><label>Skills</label><input name="skills" id="e_skills" placeholder="Comma separated"></div>
+          <div class="full"><label>Training / Certifications (Course · Institution · Year)</label><div id="cvCertRows"></div><button type="button" class="btn ghost" onclick="addCVRow('cvCertRows')"><i class="fa-solid fa-plus"></i> Add Certification</button></div>
+          <div class="full"><label>Referees (Name · Position · Org · Phone · Email)</label><div id="cvRefRows"></div><button type="button" class="btn ghost" onclick="addCVRow('cvRefRows')"><i class="fa-solid fa-plus"></i> Add Referee</button></div>
+        </div>
+      </div>
+
+      <!-- 7. DOCUMENTS -->
+      <div class="step hidden" data-step="7">
+        <h3 style="margin-bottom:16px;color:var(--violet)">Documents</h3>
+        <div class="form-grid">
+          <div class="full"><label>Document Type</label><select id="docType"><option>CV</option><option>Academic Certificate</option><option>SSNIT Card</option><option>Ghana Card</option><option>Passport</option><option>Employment Contract</option><option>Other</option></select></div>
           <div class="full"><label>Upload</label><input type="file" id="docFile"></div>
-          <div class="full"><button type="button" class="btn green" onclick="uploadDoc()"><i class="fa-solid fa-upload"></i>Upload Document</button></div>
+          <div class="full"><button type="button" class="btn green" onclick="uploadDoc()"><i class="fa-solid fa-upload"></i> Upload Document</button></div>
           <div class="full"><div id="docList"></div></div>
         </div>
       </div>
-      <!-- Step4 -->
-      <div class="step hidden" data-step="4">
-        <div class="form-grid">
-          <div><label>Username</label><input id="accUser"></div>
-          <div><label>Role</label><select id="accRole"><option>Employee</option><option>HR Officer</option><option>Manager</option><option>Super Admin</option></select></div>
-        </div>
-      </div>
+
       <div class="full" style="display:flex;gap:12px;justify-content:flex-end;margin-top:10px">
         <button type="button" class="btn ghost" onclick="closeModal('empModal')">Cancel</button>
+        <button type="button" class="btn ghost" onclick="printEmployeeForm()"><i class="fa-solid fa-print"></i> Print</button>
         <button type="submit" class="btn green"><i class="fa-solid fa-floppy-disk"></i>Save Employee</button>
       </div>
     </form>
@@ -676,9 +737,59 @@ function empStep(n,t){qs('#empTabs .tab').forEach(x=>x.classList.remove('active'
 async function saveEmp(e){e.preventDefault();
   const f=e.target,fd=new FormData(f),data={};
   fd.forEach((v,k)=>data[k]=v||null);
+  // capture photo as base64 if selected
+  const pfile=document.querySelector('#photoFile');
+  if(pfile&&pfile.files&&pfile.files[0]){
+    data.photo=await readFileAsDataURL(pfile.files[0]);
+  }
   const r=await post('save_employee',data);
   if(r&&r.ok){showAlert('Employee saved');closeModal('empModal');loadEmployees();}
   else showAlert(r&&r.error?r.error:'Save failed');
+}
+function readFileAsDataURL(file){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result);rd.onerror=rej;rd.readAsDataURL(file);});}
+let cameraActive=false;
+async function photoFromCamera(){
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
+    const video=document.createElement('video');video.srcObject=stream;video.play();
+    const c=document.createElement('canvas');
+    // walk through the face-off: capture still after 1s
+    setTimeout(()=>{c.width=video.videoWidth;c.height=video.videoHeight;c.getContext('2d').drawImage(video,0,0);stream.getTracks().forEach(t=>t.stop());const url=c.toDataURL('image/jpeg');document.querySelector('#photoPreview').src=url;document.querySelector('#photoPreview').style.display='block';document.querySelector('#photoFile').dataset.base64=url;},1200);
+    showAlert('Position face, capturing in ~2s');
+  }catch(err){showAlert('Camera access blocked');}
+}
+// CV dynamic rows
+function addCVRow(containerId){
+  const box=document.getElementById(containerId);
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;gap:8px;margin-bottom:8px;align-items:center';
+  row.innerHTML='<input placeholder="Value 1" style="flex:1"><input placeholder="Value 2" style="flex:1"><input placeholder="Value 3" style="flex:1"><button type="button" class="btn ghost" style="padding:8px" onclick="this.parentElement.remove()"><i class="fa-solid fa-xmark"></i></button>';
+  box.appendChild(row);
+  if(!box.dataset.seeded){for(let i=0;i<2;i++){const b=box.cloneNode(false);b.innerHTML=row.innerHTML;box.appendChild(b);}box.dataset.seeded='1';}
+}
+function printEmployeeForm(){
+  const e=$('#empForm').elements;
+  const printWin=window.open('','_blank','width=800,height=600');
+  const val=id=>{const el=document.getElementById(id);return el?(el.value||'') :'';};
+  printWin.document.write(`<html><head><title>Employee Application Form</title><style>body{font-family:Arial;padding:40px;color:#222}.h{text-align:center;margin-bottom:24px}table{width:100%;border-collapse:collapse;margin-bottom:18px}td{border:1px solid #999;padding:9px}td.l{font-weight:bold;width:180px;background:#f4f4f4}h2{color:#444;border-bottom:2px solid #444;padding-bottom:4px}</style></head><body>
+    <div class="h"><h1>INDO COMPANY</h1><h3>Employee Application Form</h3></div>
+    <h2>Personal Details</h2><table><tr><td class="l">Full Name</td><td>${esc(val('e_name'))}</td><td class="l">Birthday</td><td>${esc(val('e_dob'))}</td></tr>
+    <tr><td class="l">Address</td><td colspan="3">${esc(val('e_addr'))}</td></tr>
+    <tr><td class="l">Mobile</td><td>${esc(val('e_phone'))}</td><td class="l">Email</td><td>${esc(val('e_email'))}</td></tr>
+    <tr><td class="l">SSNIT</td><td>${esc(val('e_ssnit'))}</td><td class="l">Last Education</td><td>${esc(val('e_edu'))}</td></tr>
+    <tr><td class="l">Gender</td><td>${esc(val('e_gender'))}</td><td class="l">Marital Status</td><td>${esc(val('e_marital'))}</td></tr>
+    <tr><td class="l">Spouse's Name</td><td>${esc(val('e_spouse'))}</td><td class="l">Spouse Mobile</td><td>${esc(val('e_spousemob'))}</td></tr>
+    <tr><td class="l">Nationality</td><td colspan="3">${esc(val('e_nation'))}</td></tr></table>
+    <h2>Job Info</h2><table><tr><td class="l">Position</td><td>${esc(val('e_pos').options? val('e_pos'):'')}</td><td class="l">Department</td><td>${esc(val('e_dept'))}</td></tr>
+    <tr><td class="l">Employment Type</td><td>${esc(val('e_etype'))}</td><td class="l">Start Date</td><td>${esc(val('e_sdate'))}</td></tr></table>
+    <h2>Bank Account Info</h2><table><tr><td class="l">Account Name</td><td>${esc(val('e_bacct'))}</td><td class="l">Bank</td><td>${esc(val('e_bank'))}</td></tr>
+    <tr><td class="l">Branch</td><td>${esc(val('e_bbranch'))}</td><td class="l">Account No.</td><td>${esc(val('e_bno'))}</td></tr></table>
+    <h2>Emergency Contact</h2><table><tr><td class="l">Name</td><td>${esc(val('e_econtact'))}</td><td class="l">Relationship</td><td>${esc(val('e_erel'))}</td></tr>
+    <tr><td class="l">Mobile</td><td>${esc(val('e_ephone'))}</td><td class="l">Date</td><td>${esc(val('e_edate2'))}</td></tr></table>
+    <p style="margin-top:30px"><b>Declaration:</b> I declare that the information provided above is true and accurate to the best of my knowledge.</p>
+    <table style="margin-top:40px;border:none"><tr><td style="border:none">Signature: ......................</td><td style="border:none">Date: ......................</td></tr></table>
+    </body></html>`);
+  printWin.document.close();printWin.print();
 }
 async function delEmp(id){if(!confirm('Delete employee?'))return;const r=await get('delete_employee','id='+id);if(r&&r.ok){showAlert('Deleted');loadEmployees();}}
 

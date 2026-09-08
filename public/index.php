@@ -75,6 +75,7 @@ $unreadNotifs = (int)$db->fetchColumn("SELECT COUNT(*) FROM notifications WHERE 
       <a class="mod" href="attendance.php"><div class="ico">⏱️</div><div class="t">Attendance</div><div class="d">Clock in/out &amp; reports</div></a>
       <a class="mod" href="cctv.php"><div class="ico">📹</div><div class="t">CCTV Monitoring</div><div class="d">Cameras &amp; security events</div></a>
       <a class="mod" href="index.php"><div class="ico">📊</div><div class="t">Admin Dashboard</div><div class="d">Company-wide overview</div></a>
+      <a class="mod" href="users.php"><div class="ico">🔐</div><div class="t">User Management</div><div class="d">Users &amp; permissions</div></a>
     </div>
 
     <div class="cards">

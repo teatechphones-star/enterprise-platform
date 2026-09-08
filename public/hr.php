@@ -227,14 +227,42 @@ if ($page === 'login') {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $err = loginH($_POST['username'] ?? '', $_POST['password'] ?? '');
         if ($err === null) { header('Location: ?page=app'); exit; }
-        echo "<script>alert('$err');location='?page=login';</script>"; exit;
+        echo "<script>alert('" . htmlspecialchars($err) . "');location='?page=login';</script>"; exit;
     }
-    requireLogin(); // if already logged in go to app
-    audit('Login', 'Auth');
-    header('Location: ?page=app'); exit;
+    // GET: if logged in go to app, else show login form
+    if (currentUser()) { header('Location: ?page=app'); exit; }
+    ?><!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>INDO HR · Login</title><link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box;font-family:'Quicksand',sans-serif;}
+      body{background:#e7ecf5;min-height:100vh;display:grid;place-items:center;color:#3a4a5f;}
+      .card{width:min(420px,92vw);background:#eef2f9;border-radius:32px;padding:44px 38px;text-align:center;box-shadow:35px 35px 68px 0 #a3b1c6,-23px -23px 45px 0 #fff;}
+      .ic{width:84px;height:84px;border-radius:28px;background:linear-gradient(135deg,#7c6cf0,#f06cae);display:grid;place-items:center;margin:0 auto 20px;color:#fff;font-size:36px;box-shadow:35px 35px 68px 0 #a3b1c6,-23px -23px 45px 0 #fff;}
+      h1{font-size:24px;color:#37455e;margin-bottom:4px;}p{color:#8a97ab;font-weight:600;margin-bottom:28px;font-size:14px;}
+      form{display:flex;flex-direction:column;gap:16px;}
+      input{width:100%;padding:14px 18px;border:none;border-radius:16px;background:#fff;font-family:inherit;font-size:15px;color:#3a4a5f;box-shadow:inset 6px 6px 12px #c5d0e0,inset -6px -6px 12px #fff;outline:none;text-align:center;}
+      button{cursor:pointer;padding:15px;border:none;border-radius:40px;font-family:inherit;font-weight:700;font-size:15px;color:#fff;background:linear-gradient(135deg,#7c6cf0,#9a8cf5);box-shadow:35px 35px 68px 0 #a3b1c6,-23px -23px 45px 0 #fff;margin-top:6px;}
+      button:active{transform:translateY(1px);}
+      .err{color:#d9574a;font-weight:700;font-size:14px;margin-bottom:8px;}
+    </style></head>
+    <body>
+      <div class="card">
+        <div class="ic"><i class="fa-solid fa-users"></i></div>
+        <h1>INDO HR Management</h1>
+        <p>Sign in to your HR workspace</p>
+        <?php if ($_GET['err'] ?? '') echo '<div class="err">'.htmlspecialchars($_GET['err']).'</div>'; ?>
+        <form method="POST" action="?page=login">
+          <input type="text" name="username" placeholder="Username" autocomplete="username" required>
+          <input type="password" name="password" placeholder="Password" autocomplete="current-password" required>
+          <button type="submit"><i class="fa-solid fa-right-to-bracket"></i> Sign In</button>
+        </form>
+      </div>
+    </body></html><?php
+    exit;
 }
 
-requireLogin();
+requireLogin(); // protect app + api pages
 $user = currentUser();
 ?>
 <!DOCTYPE html>

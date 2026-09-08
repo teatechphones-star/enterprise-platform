@@ -217,6 +217,40 @@ if ($page === 'api') {
         case 'report': {
             echo json_encode(q("SELECT * FROM reports ORDER BY id DESC LIMIT 20")); break;
         }
+        case 'audit': {
+            echo json_encode(['list'=>q("SELECT a.*, u.full_name uname FROM audit_logs a LEFT JOIN users u ON a.user_id=u.id ORDER BY a.created_at DESC LIMIT 100")]); break;
+        }
+        case 'notifications': {
+            $uid = $me['id'] ?? null;
+            echo json_encode(['list'=>q("SELECT * FROM notifications WHERE user_id IS NULL OR user_id=? ORDER BY created_at DESC LIMIT 50",'i',[$uid])]); break;
+        }
+        case 'mark_notif': {
+            $id = (int)($_GET['id'] ?? 0);
+            q("UPDATE notifications SET is_read=1 WHERE id=?",'i',[$id]);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'users': {
+            echo json_encode(['list'=>q("SELECT u.id,u.username,u.full_name,u.email,u.status,u.last_login,r.name role FROM users u LEFT JOIN roles r ON u.role_id=r.id ORDER BY u.id")]); break;
+        }
+        case 'save_role': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            q("INSERT INTO roles (name,description) VALUES (?,?)",'ss',[$d['name'],$d['description']??null]);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'save_setting': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            q("INSERT INTO system_settings (s_key,s_value,description) VALUES (?,?,?) ON DUPLICATE KEY UPDATE s_value=VALUES(s_value)",'sss',[$d['key'],$d['value'],$d['description']??null]);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'settings': {
+            echo json_encode(['list'=>q("SELECT s_key,s_value,description FROM system_settings ORDER BY s_key")]); break;
+        }
+        case 'generate_report': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            $uid = $me['id'] ?? null;
+            q("INSERT INTO reports (name,module,type,generated_by) VALUES (?,?,?,?)",'sssi',[$d['name'],$d['module']??'hr',$d['type']??'CSV',$uid]);
+            echo json_encode(['ok'=>true]); break;
+        }
         case 'delete_employee': {
             $id = (int)$_GET['id'];
             q("DELETE FROM employees WHERE id=?",'i',[$id]);
@@ -533,12 +567,13 @@ textarea{resize:vertical;min-height:80px;}
     <!-- REPORTS -->
     <div class="view" id="v-reports">
       <div class="stats">
-        <button class="stat clay" onclick="exportCSV('employees')"><b>Employees</b><span>Export CSV</span></button>
-        <button class="stat clay" onclick="exportCSV('attendance')"><b>Attendance</b><span>Export CSV</span></button>
+        <button class="stat clay" onclick="genReport('csv')"><b>Employees</b><span>Generate CSV</span></button>
+        <button class="stat clay" onclick="genReport('att')"><b>Attendance</b><span>Generate CSV</span></button>
+        <button class="stat clay" onclick="exportCSV('employees')"><b>Live Export</b><span>Open CSV</span></button>
         <button class="stat clay" onclick="window.print()"><b>Print</b><span>Print report</span></button>
       </div>
       <div class="table-wrap clay" style="padding:14px">
-        <table><thead><tr><th>Report</th><th>Generated</th></tr></thead><tbody id="repBody"></tbody></table>
+        <table><thead><tr><th>Report Name</th><th>Module</th><th>Type</th><th>Generated</th></tr></thead><tbody id="repBody"></tbody></table>
       </div>
     </div>
 
@@ -552,6 +587,10 @@ textarea{resize:vertical;min-height:80px;}
       <div class="charts" style="grid-template-columns:1fr 1fr">
         <div class="chart clay"><h3>Leave Types</h3><div id="leaveTypesBody"></div></div>
         <div class="chart clay"><h3>Positions</h3><div id="posBody"></div></div>
+        <div class="chart clay"><h3>System Settings</h3>
+          <button class="btn" onclick="openSettingModal()" style="margin-bottom:12px;font-size:12px"><i class="fa-solid fa-plus"></i> Add Setting</button>
+          <div id="sysSettingsBody"></div>
+        </div>
       </div>
     </div>
   
@@ -842,6 +881,7 @@ function show(view){
   if(view==='audit')loadAudit();
   if(view==='users')loadUsers();
   if(view==='emp-docs')loadEmpDocs();
+  if(view==='notifications')loadNotif();
 }
 qs('.nav a[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();show(a.dataset.view);closeSidebar();}));
 
@@ -1014,22 +1054,28 @@ async function loadAttendance(){
 }
 
 /* ---- REPORTS ---- */
-async function loadReports(){const d=await get('report');$('#repBody').innerHTML=(d||[]).map(r=>`<tr><td>${esc(r.name||'Report')}</td><td>${r.created_at||'-'}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">Generate reports from dashboard data</td></tr>';}
+async function loadReports(){const d=await get('report');$('#repBody').innerHTML=(d&&d.length?d:[]).map(r=>`<tr><td>${esc(r.name||'Report')}</td><td><span class="pill violet">${esc(r.module||'-')}</span></td><td>${esc(r.type||'-')}</td><td>${r.generated_at||'-'}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Generate reports to view them here</td></tr>';}
 function exportCSV(type){window.open(API+(type==='attendance'?'attendance':'employees'),'_blank');setTimeout(()=>showAlert('CSV ready - check new window/open data'),600);}
+async function genReport(type){const name={csv:'Employee Master List',att:'Attendance Summary',leave:'Leave Summary'}[type]||'HR Report';const r=await post('generate_report',{name,module:'hr',type:type==='att'||type==='leave'?'CSV':'CSV'});showAlert(r&&r.ok?'Report generated & saved.':'Error');loadReports();}
 
 /* ---- NOTIFICATIONS ---- */
 async function loadNotif(){
-  const d=await get('stats');
-  $('#notifBody').innerHTML=`<div style="padding:8px 0"><b>🔴 </b> Employee absences need attention (${d.absent})<br><b>🟠 </b> Pending leave approvals: ${d.pending}<br><b>🟡 </b> Disciplinary cases in review: ${d.issues}<br><b>🟢 </b> New hires this month: ${d.new}</div>`;
+  const r=await get('notifications');
+  const list=r&&r.list?r.list:[];
+  $('#notifBody').innerHTML=(list.length?list.map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px;border-bottom:1px solid #eef1f6"><div><b>${esc(n.title||'')}</b><br><small style="color:#8a97ab">${esc(n.message||'')}</small><br><small style="color:#b4bfd0">${n.created_at||''} · ${esc(n.module||'')}</small></div>${n.is_read?'':'<button class="btn ghost" style="padding:6px 12px;font-size:11px" onclick="markNotif('+n.id+')"><i class="fa-solid fa-check"></i> Mark read</button>'}</div>`).join(''):'<p style="color:#7a8aa0;text-align:center;padding:20px">No notifications.</p>');
 }
+async function markNotif(id){const r=await get('mark_notif','id='+id);loadNotif();}
 loadNotif();
 /* settings hook */
 async function loadSettings(){
   const lt=await get('leave_types');
   $('#leaveTypesBody').innerHTML=(lt||[]).map(l=>`<div style="padding:10px;background:#fff;border-radius:12px;margin:6px 0;box-shadow:var(--inner)"><b>${esc(l.name||l)}</b></div>`).join('')||'<div style="color:#8a97ab">No leave types set</div>';
-  const pos=await get('positions');
-  $('#posBody').innerHTML=(pos||[]).map(p=>`<div style="padding:10px;background:#fff;border-radius:12px;margin:6px 0;box-shadow:var(--inner)"><b>${esc(p.title)}</b> <small style="color:#8a97ab">${esc(p.dept||'')}</small></div>`).join('')||'<div style="color:#8a97ab">No positions set</div>';
+  const pr=await get('positions');const pos=pr&&pr.list?pr.list:[];
+  $('#posBody').innerHTML=pos.map(p=>`<div style="padding:10px;background:#fff;border-radius:12px;margin:6px 0;box-shadow:var(--inner)"><b>${esc(p.title)}</b> <small style="color:#8a97ab">${esc(p.dept||'')}</small></div>`).join('')||'<div style="color:#8a97ab">No positions set</div>';
+  const ss=await get('settings');const slist=ss&&ss.list?ss.list:[];
+  $('#sysSettingsBody').innerHTML=slist.map(s=>`<div style="padding:10px;background:#fff;border-radius:12px;margin:6px 0;box-shadow:var(--inner)"><b>${esc(s.s_key||'')}</b> <span style="color:#5b6b80">${esc(s.s_value||'')}</span><br><small style="color:#8a97ab">${esc(s.description||'')}</small></div>`).join('')||'<div style="color:#8a97ab">No settings</div>';
 }
+function openSettingModal(){showPrompt('Add System Setting',[['Key','key','text'],['Value','value','text'],['Description','description','text']],async v=>{const r=await post('save_setting',v);showAlert(r&&r.ok?'Setting saved.':(r&&r.error||'Error'));loadSettings();});}
 
 /* ---- PROFILE ---- */
 let currentProf=null;
@@ -1185,10 +1231,10 @@ async function loadEmpDocs(){
 let anDeptChart=null,anAttChart=null;
 async function loadAnalytics(){
   const [s,emp]=await Promise.all([get('stats'),get('employees')]);
-  const empL=emp&&emp.list?emp.list:[];
+  const empL=Array.isArray(emp)?emp:(emp&&emp.list?emp.list:[]);
   // dept chart
   const deptCounts={};
-  empL.forEach(e=>{const d=e.department_name||'Other';deptCounts[d]=(deptCounts[d]||0)+1;});
+  empL.forEach(e=>{const d=e.dept||e.department_name||'Other';deptCounts[d]=(deptCounts[d]||0)+1;});
   const deptLabels=Object.keys(deptCounts),deptVals=Object.values(deptCounts);
   if(anDeptChart)anDeptChart.destroy();
   anDeptChart=new Chart($('#analyticsDeptChart'),{type:'bar',data:{labels:deptLabels,datasets:[{label:'Employees',data:deptVals,backgroundColor:'#6c7ae0'}]},options:{responsive:true,plugins:{legend:{display:false}}}});
@@ -1204,26 +1250,25 @@ function loadSearchInit(){globalSearch('');}
 async function globalSearch(q){
   if(!q){$('#searchResults').innerHTML='<p style="color:#7a8aa0;text-align:center">Type to search employees, departments, positions...</p>';return;}
   const r=await get('employees');
-  const list=r&&r.list?r.list:[];
+  const list=Array.isArray(r)?r:(r&&r.list?r.list:[]);
   const ql=q.toLowerCase();
-  const res=list.filter(e=>(e.full_name||'').toLowerCase().includes(ql)||(e.email||'').toLowerCase().includes(ql)||(e.department_name||'').toLowerCase().includes(ql));
+  const res=list.filter(e=>(e.full_name||'').toLowerCase().includes(ql)||(e.email||'').toLowerCase().includes(ql)||(e.dept||e.department_name||'').toLowerCase().includes(ql));
   $('#searchResults').innerHTML=res.length?res.map(e=>`<div class="chart-item" style="padding:12px;border-bottom:1px solid #eef1f6"><b>${e.full_name||''}</b> · ${e.email||''}<br><small>${e.department_name||''} · ${e.position_title||''}</small></div>`).join(''):'<p style="color:#7a8aa0;text-align:center">No matching results.</p>';
 }
 
 /* ---- AUDIT LOG ---- */
 async function loadAudit(){
-  // derive from employees (simple audit trail placeholder)
-  const r=await get('employees');
+  const r=await get('audit');
   const list=r&&r.list?r.list:[];
-  $('#auditBody').innerHTML=list.map(e=>`<tr><td>admin</td><td>Added employee ${e.full_name||''}</td><td>${e.created_at||''}</td></tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:#7a8aa0">No audit records.</td></tr>';
+  $('#auditBody').innerHTML=list.length?list.map(e=>`<tr><td>${esc(e.uname||e.user_id||'admin')}</td><td>${esc(e.action||'')} <small style="color:#8a97ab">(${esc(e.module||'')})</small><br><small style="color:#aab4c4">${esc(e.details||'')}</small></td><td>${e.created_at||''}</td></tr>`).join(''):'<tr><td colspan="3" style="text-align:center;color:#7a8aa0">No audit records.</td></tr>';
 }
 
 /* ---- USERS & PERMISSIONS ---- */
 async function loadUsers(){
-  const r=await get('employees');
+  const r=await get('users');
   const list=r&&r.list?r.list:[];
-  $('#userCount').textContent=list.length+1;
-  $('#usersBody').innerHTML=`<tr><td>admin</td><td>Super Admin</td><td><span style="color:#2ecc71">Active</span></td></tr>`+list.map(e=>`<tr><td>${e.email||e.full_name||''}</td><td>Employee</td><td><span style="color:#2ecc71">Active</span></td></tr>`).join('');
+  $('#userCount').textContent=list.length;
+  $('#usersBody').innerHTML=list.length?list.map(u=>`<tr><td><b>${esc(u.username||'')}</b><br><small style="color:#8a97ab">${esc(u.email||u.full_name||'')}</small></td><td><span class="pill violet">${esc(u.role||'User')}</span></td><td><span style="color:${u.status==='active'?'#2ecc71':'#e74c3c'}">${esc(u.status||'')}</span></td></tr>`).join(''):'<tr><td colspan="3" style="text-align:center;color:#7a8aa0">No users.</td></tr>';
 }
 
 function openEmpForm(){openEmp();}

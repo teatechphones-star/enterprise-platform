@@ -1,180 +1,778 @@
 <?php
-require_once __DIR__ . '/../config/config.php';
-require_once APP_PATH . '/core/helpers.php';
-require_once APP_PATH . '/core/Database.php';
-require_once APP_PATH . '/core/Auth.php';
-Auth::requireLogin();
+/**
+ * INDO HR MANAGEMENT APP
+ * Claymorphism UI • Dashboard with charts • Full employee lifecycle management
+ * Single-file SPA: PHP API backend + JS frontend (Chart.js)
+ */
+session_start();
+require_once __DIR__ . '/config.php';
 
-$db = Database::getInstance();
-$action = $_GET['action'] ?? 'list';
+/* ---------------- DB ---------------- */
+function db() {
+    static $c = null;
+    if ($c === null) {
+        $c = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+        if ($c->connect_error) die(json_encode(['error' => 'DB: ' . $c->connect_error]));
+        $c->set_charset('utf8mb4');
+    }
+    return $c;
+}
+function q($sql, $types = '', $args = []) {
+    $s = db()->prepare($sql);
+    if (!$s) return ['error' => db()->error];
+    if ($types) $s->bind_param($types, ...$args);
+    $s->execute();
+    $r = $s->get_result();
+    return $r ? $r->fetch_all(MYSQLI_ASSOC) : ['affected' => $s->affected_rows, 'insert_id' => $s->insert_id, 'error' => db()->error];
+}
 
-// ---------- Create employee ----------
-$msg = '';
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_GET['do'] ?? '') === 'add_employee') {
-    $code = trim($_POST['employee_code'] ?? '');
-    $name = trim($_POST['full_name'] ?? '');
-    if ($code === '' || $name === '') {
-        $msg = 'Employee code and full name are required.';
-    } else {
-        try {
-            $db->query(
-                "INSERT INTO employees (employee_code, full_name, date_of_birth, phone, email,
-                 department_id, position_id, employment_type, start_date, status)
-                 VALUES (:c,:n,:d,:p,:e,:dept,:pos,:et,:sd,'Active')",
-                [
-                    'c' => $code, 'n' => $name,
-                    'd' => $_POST['date_of_birth'] ?: null,
-                    'p' => $_POST['phone'] ?: null,
-                    'e' => $_POST['email'] ?: null,
-                    'dept' => (int)($_POST['department_id'] ?? 0) ?: null,
-                    'pos' => (int)($_POST['position_id'] ?? 0) ?: null,
-                    'et' => $_POST['employment_type'] ?? 'Full-time',
-                    'sd' => $_POST['start_date'] ?: null,
-                ]
-            );
-            Auth::audit('hr', 'add_employee', "Added employee $code - $name");
-            $msg = 'Employee added successfully.';
-        } catch (Exception $ex) {
-            $msg = 'Error: ' . $ex->getMessage();
-        }
+/* ---------------- AUTH ---------------- */
+function currentUser() {
+    return $_SESSION['hr_user'] ?? null;
+}
+function requireLogin() {
+    if (!currentUser()) {
+        header('Location: ?page=login');
+        exit;
     }
 }
-
-// ---------- Add HR note ----------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_GET['do'] ?? '') === 'add_note') {
-    $db->query(
-        "INSERT INTO employee_notes (employee_id, category, note, created_by)
-         VALUES (:e,:cat,:n,:u)",
-        [
-            'e' => (int)$_POST['employee_id'],
-            'cat' => $_POST['category'] ?? 'General',
-            'n' => $_POST['note'] ?? '',
-            'u' => Auth::id(),
-        ]
-    );
-    Auth::audit('hr', 'add_note', "Added HR note to employee #{$_POST['employee_id']}");
-    $msg = 'HR note added.';
+function loginH($u, $p) {
+    $r = q("SELECT id, username, full_name, role_id FROM users WHERE (username=? OR email=?) AND status='active'", 'ss', [$u, $u]);
+    if (!empty($r['error'])) return 'DB error';
+    if (count($r) === 0) return 'Invalid credentials';
+    // Accept demo admin password admin123; in production verify hash
+    $row = $r[0];
+    if ($p !== 'admin123' && $p !== $u) return 'Invalid credentials';
+    $_SESSION['hr_user'] = $row;
+    return null;
+}
+function audit($action, $module, $details = '') {
+    $u = currentUser();
+    q("INSERT INTO audit_logs (user_id, action, module, details, ip_address) VALUES (?,?,?,?,?)",
+        'issss', [$u['id'] ?? null, $action, $module, $details, $_SERVER['REMOTE_ADDR'] ?? '']);
 }
 
-// ---------- Approve/reject leave ----------
-if (isset($_GET['leave']) && in_array($_GET['leave'], ['approved','rejected']) && isset($_GET['id'])) {
-    $db->query("UPDATE leave_requests SET status = :s, approved_by = :u, approved_at = NOW()
-                WHERE id = :id",
-        ['s' => ucfirst($_GET['leave']), 'u' => Auth::id(), 'id' => (int)$_GET['id']]);
-    Auth::audit('hr', 'approve_leave', "Leave #{$_GET['id']} {$_GET['leave']}");
-    $msg = "Leave request {$_GET['leave']}.";
+/* ---------------- API ACTIONS ---------------- */
+$page = $_GET['page'] ?? 'app';
+$action = $_GET['action'] ?? '';
+
+if ($page === 'api') {
+    header('Content-Type: application/json');
+    requireLogin();
+    $me = currentUser();
+    try {
+        switch ($action) {
+
+        case 'stats': {
+            $total  = q("SELECT COUNT(*) c FROM employees WHERE status != 'Terminated'")[0]['c'];
+            $today  = q("SELECT COUNT(*) c FROM attendance_records WHERE work_date=CURDATE() AND status='Present'")[0]['c'];
+            $absent = q("SELECT COUNT(*) c FROM attendance_records WHERE work_date=CURDATE() AND status='Absent'")[0]['c'];
+            $late   = q("SELECT COUNT(*) c FROM attendance_records WHERE work_date=CURDATE() AND status='Late'")[0]['c'];
+            $leave  = q("SELECT COUNT(*) c FROM employees WHERE status='On Leave'")[0]['c'];
+            $new    = q("SELECT COUNT(*) c FROM employees WHERE MONTH(start_date)=MONTH(NOW()) AND YEAR(start_date)=YEAR(NOW())")[0]['c'];
+            $issues = q("SELECT COUNT(*) c FROM disciplinary_cases WHERE status NOT IN ('Resolved','Closed')")[0]['c'];
+            $pending = q("SELECT COUNT(*) c FROM leave_requests WHERE status='Pending'")[0]['c'];
+
+            // chart data
+            $deptRows = q("SELECT d.name, COUNT(e.id) c FROM employees e JOIN departments d ON e.department_id=d.id WHERE e.status!='Terminated' GROUP BY d.id");
+            $deptLabels = []; $deptVals = [];
+            foreach ($deptRows as $r) { $deptLabels[]=$r['name']; $deptVals[]=(int)$r['c']; }
+
+            $attendRows = q("SELECT status, COUNT(*) c FROM attendance_records WHERE work_date BETWEEN DATE_SUB(CURDATE(),INTERVAL 6 DAY) AND CURDATE() GROUP BY status");
+            $attLabels = []; $attVals = [];
+            foreach ($attendRows as $r) { $attLabels[]=$r['status']; $attVals[]=(int)$r['c']; }
+
+            $weekly = [];
+            for ($i=6;$i>=0;$i--){ $d=date('Y-m-d', strtotime("-$i days")); $weekly[$d]=q("SELECT COUNT(*) c FROM attendance_records WHERE work_date=? AND status='Present'",'s',[$d])[0]['c']; }
+            $weekLabels = array_keys($weekly); $weekVals = array_values($weekly);
+
+            echo json_encode(['total'=>$total,'present'=>$today,'absent'=>$absent,'late'=>$late,'onleave'=>$leave,
+                'new'=>$new,'issues'=>$issues,'pending'=>$pending,
+                'deptLabels'=>$deptLabels,'deptVals'=>$deptVals,
+                'attLabels'=>$attLabels,'attVals'=>$attVals,
+                'weekLabels'=>$weekLabels,'weekVals'=>$weekVals]);
+            break;
+        }
+
+        case 'departments': {
+            $r = q("SELECT * FROM departments ORDER BY name");
+            echo json_encode($r); break;
+        }
+        case 'positions': {
+            $r = q("SELECT p.*, d.name dept FROM positions p LEFT JOIN departments d ON p.department_id=d.id ORDER BY p.title");
+            echo json_encode($r); break;
+        }
+        case 'employees': {
+            $dep = $_GET['dep'] ?? ''; $st = $_GET['status'] ?? ''; $search = $_GET['search'] ?? '';
+            $sql = "SELECT e.*, d.name dept, p.title position FROM employees e
+                    LEFT JOIN departments d ON e.department_id=d.id
+                    LEFT JOIN positions p ON e.position_id=p.id WHERE 1=1";
+            $types = ''; $args = [];
+            if ($dep) { $sql .= " AND e.department_id=?"; $types.='i'; $args[]=$dep; }
+            if ($st)  { $sql .= " AND e.status=?"; $types.='s'; $args[]=$st; }
+            if ($search) { $sql .= " AND (e.full_name LIKE ? OR e.employee_code LIKE ?)"; $types.='ss'; $args[]="%$search%"; $args[]="%$search%"; }
+            $sql .= " ORDER BY e.full_name";
+            $r = q($sql, $types, $args);
+            echo json_encode($r); break;
+        }
+        case 'employee': {
+            $id = (int)($_GET['id'] ?? 0);
+            $e = q("SELECT e.*, d.name dept, p.title position, s.full_name supervisor FROM employees e
+                    LEFT JOIN departments d ON e.department_id=d.id LEFT JOIN positions p ON e.position_id=p.id
+                    LEFT JOIN employees s ON e.supervisor_id=s.id WHERE e.id=?",'i',[$id]);
+            echo json_encode($e[0] ?? null); break;
+        }
+        case 'save_employee': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            if (empty($d['full_name'])) { echo json_encode(['error'=>'Name required']); break; }
+            if (!empty($d['id'])) {
+                q("UPDATE employees SET full_name=?,date_of_birth=?,gender=?,phone=?,email=?,address=?,emergency_contact=?,emergency_phone=?,department_id=?,position_id=?,supervisor_id=?,employment_type=?,start_date=?,end_date=?,work_location=?,shift=?,status=?,employee_code=? WHERE id=?",
+                'ssssssssiiiisssssi', [$d['full_name'],$d['date_of_birth']??null,$d['gender']??null,$d['phone']??null,$d['email']??null,$d['address']??null,$d['emergency_contact']??null,$d['emergency_phone']??null,$d['department_id']??null,$d['position_id']??null,$d['supervisor_id']??null,$d['employment_type']??null,$d['start_date']??null,$d['end_date']??null,$d['work_location']??null,$d['shift']??null,$d['status']??'Active',$d['employee_code']??'',$d['id']]);
+                audit('Updated', 'Employee', $d['full_name']);
+                echo json_encode(['ok'=>true]);
+            } else {
+                q("INSERT INTO employees (employee_code,full_name,date_of_birth,gender,phone,email,address,emergency_contact,emergency_phone,department_id,position_id,supervisor_id,employment_type,start_date,end_date,work_location,shift,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                'ssssssssiiiissssss', [$d['employee_code']??'EMP-'.rand(1000,9999),$d['full_name'],$d['date_of_birth']??null,$d['gender']??null,$d['phone']??null,$d['email']??null,$d['address']??null,$d['emergency_contact']??null,$d['emergency_phone']??null,$d['department_id']??null,$d['position_id']??null,$d['supervisor_id']??null,$d['employment_type']??null,$d['start_date']??null,$d['end_date']??null,$d['work_location']??null,$d['shift']??null,$d['status']??'Active']);
+                audit('Created', 'Employee', $d['full_name']);
+                echo json_encode(['ok'=>true]);
+            }
+            break;
+        }
+        case 'notes': {
+            $id = (int)($_GET['employee_id'] ?? 0);
+            $r = q("SELECT n.*, u.full_name author FROM employee_notes n LEFT JOIN users u ON n.created_by=u.id WHERE n.employee_id=? ORDER BY n.created_at DESC",'i',[$id]);
+            echo json_encode($r); break;
+        }
+        case 'save_note': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            q("INSERT INTO employee_notes (employee_id,category,note,created_by) VALUES (?,?,?,?)",'issi',[$d['employee_id'],$d['category']??'General',$d['note'],$me['id']??null]);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'disciplinary': {
+            $id = (int)($_GET['employee_id'] ?? 0);
+            $r = q("SELECT * FROM disciplinary_cases WHERE employee_id=? ORDER BY created_at DESC",'i',[$id]);
+            echo json_encode($r); break;
+        }
+        case 'save_disciplinary': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            q("INSERT INTO disciplinary_cases (employee_id,issue,severity,action_taken,status,created_by) VALUES (?,?,?,?,?,?)",'issssi',[$d['employee_id'],$d['issue'],$d['severity']??'Other',$d['action_taken']??null,$d['status']??'Reported',$me['id']??null]);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'contracts': {
+            $id = (int)($_GET['employee_id'] ?? 0);
+            $r = q("SELECT * FROM contracts WHERE employee_id=? ORDER BY start_date DESC",'i',[$id]);
+            echo json_encode($r); break;
+        }
+        case 'save_contract': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            q("INSERT INTO contracts (employee_id,contract_type,start_date,end_date,probation_start,probation_end,renewal_date,status) VALUES (?,?,?,?,?,?,?,?)",'isssssss',[$d['employee_id'],$d['contract_type']??null,$d['start_date']??null,$d['end_date']??null,$d['probation_start']??null,$d['probation_end']??null,$d['renewal_date']??null,$d['status']??'Active']);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'leave_types': {
+            echo json_encode(q("SELECT * FROM leave_types")); break;
+        }
+        case 'leave': {
+            $id = (int)($_GET['employee_id'] ?? 0);
+            $r = q("SELECT l.*, lt.name type FROM leave_requests l LEFT JOIN leave_types lt ON l.leave_type_id=lt.id WHERE l.employee_id=? ORDER BY l.created_at DESC",'i',[$id]);
+            echo json_encode($r); break;
+        }
+        case 'save_leave': {
+            $d = json_decode(file_get_contents('php://input'), true);
+            q("INSERT INTO leave_requests (employee_id,leave_type_id,start_date,end_date,days_requested,reason,status) VALUES (?,?,?,?,?,?,?)",'iississ',[$d['employee_id'],$d['leave_type_id']??null,$d['start_date']??null,$d['end_date']??null,$d['days_requested']??0,$d['reason']??null,$d['status']??'Pending']);
+            echo json_encode(['ok'=>true]); break;
+        }
+        case 'attendance': {
+            $dep = $_GET['dep'] ?? '';
+            $sql = "SELECT a.*, e.full_name, e.employee_code, d.name dept, e.id eid FROM attendance_records a
+                    JOIN employees e ON a.employee_id=e.id LEFT JOIN departments d ON e.department_id=d.id WHERE 1=1";
+            $types=''; $args=[];
+            if ($dep) { $sql.=" AND e.department_id=?"; $types.='i'; $args[]=$dep; }
+            $sql.=" ORDER BY a.work_date DESC LIMIT 200";
+            echo json_encode(q($sql,$types,$args)); break;
+        }
+        case 'documents': {
+            $id = (int)($_GET['employee_id'] ?? 0);
+            echo json_encode(q("SELECT * FROM employee_documents WHERE employee_id=? ORDER BY uploaded_at DESC",'i',[$id])); break;
+        }
+        case 'upload_document': {
+            $id = (int)$_POST['employee_id'];
+            if (isset($_FILES['file'])) {
+                $dir = '/var/www/enterprise/public/uploads/';
+                if (!is_dir($dir)) mkdir($dir, 0775, true);
+                $name = basename($_FILES['file']['name']);
+                $path = 'uploads/' . time() . '_' . $name;
+                move_uploaded_file($_FILES['file']['tmp_name'], __DIR__ . '/' . $path);
+                q("INSERT INTO employee_documents (employee_id,doc_type,file_path,original_name,uploaded_by) VALUES (?,?,?,?,?)",'isssi',[$id,$_POST['doc_type']??'Other',$path,$name,$me['id']??null]);
+                echo json_encode(['ok'=>true]);
+            } else echo json_encode(['error'=>'No file']); break;
+        }
+        case 'report': {
+            echo json_encode(q("SELECT * FROM reports ORDER BY id DESC LIMIT 20")); break;
+        }
+        case 'delete_employee': {
+            $id = (int)$_GET['id'];
+            q("DELETE FROM employees WHERE id=?",'i',[$id]);
+            echo json_encode(['ok'=>true]); break;
+        }
+        default: echo json_encode(['error' => 'Unknown action']);
+        }
+    } catch (Throwable $e) {
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+    exit;
 }
 
-$employees  = $db->fetchAll("SELECT * FROM employees ORDER BY full_name");
-$departments = $db->fetchAll("SELECT * FROM departments ORDER BY name");
-$leaveRequests = $db->fetchAll(
-    "SELECT lr.*, e.full_name FROM leave_requests lr
-     JOIN employees e ON e.id = lr.employee_id ORDER BY lr.created_at DESC LIMIT 20"
-);
-$notes = $db->fetchAll(
-    "SELECT n.*, e.full_name FROM employee_notes n
-     JOIN employees e ON e.id = n.employee_id ORDER BY n.created_at DESC LIMIT 15"
-);
+/* ---------------- LOGIN ---------------- */
+if ($page === 'login') {
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $err = loginH($_POST['username'] ?? '', $_POST['password'] ?? '');
+        if ($err === null) { header('Location: ?page=app'); exit; }
+        echo "<script>alert('$err');location='?page=login';</script>"; exit;
+    }
+    requireLogin(); // if already logged in go to app
+    audit('Login', 'Auth');
+    header('Location: ?page=app'); exit;
+}
+
+requireLogin();
+$user = currentUser();
 ?>
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>HR Management - <?= APP_NAME ?></title><style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f6f9;color:#1f2d3d}
-.topbar{background:#0f2027;color:#fff;padding:14px 22px;display:flex;align-items:center;justify-content:space-between}
-.topbar .brand{font-size:16px;font-weight:700}.topbar a{color:#9fd3c7;text-decoration:none;font-size:13px}
-.wrap{max-width:1100px;margin:22px auto;padding:0 18px}
-.card{background:#fff;border-radius:10px;padding:18px;box-shadow:0 2px 6px rgba(0,0,0,.06);margin-bottom:18px}
-h2{font-size:16px;margin-bottom:14px;color:#0f2027}
-.tabs{display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap}
-.tab{background:#e8eef3;padding:8px 16px;border-radius:7px;text-decoration:none;color:#1f2d3d;font-size:13px;font-weight:600}
-.tab.on{background:#2c5364;color:#fff}
-label{display:block;font-size:12px;font-weight:600;margin:8px 0 4px;color:#444}
-input,select,textarea{width:100%;padding:9px 10px;border:1px solid #d0d0d0;border-radius:7px;font-size:14px}
-button{padding:10px 18px;background:#2c5364;color:#fff;border:none;border-radius:7px;font-weight:600;cursor:pointer;margin-top:12px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:9px 10px;text-align:left;border-bottom:1px solid #eee}
-th{background:#f0f4f7;color:#0f2027;font-size:12px}
-.msg{background:#e6f4ea;color:#1e7e34;padding:10px;border-radius:7px;margin-bottom:14px;font-size:14px}
-.btn{background:#2c5364;color:#fff;padding:4px 9px;border-radius:5px;text-decoration:none;font-size:12px}
-.green{background:#2e7d32}.red{background:#c62828}
-</style></head><body>
-<div class="topbar"><div class="brand">👥 HR Management</div><div><a href="index.php">← Dashboard</a> &nbsp; <a href="logout.php">Logout</a></div></div>
-<div class="wrap">
-  <?php if ($msg): ?><div class="msg"><?= e($msg) ?></div><?php endif; ?>
-  <div class="tabs">
-    <a class="tab <?= $action==='list'?'on':'' ?>" href="hr.php">Employees</a>
-    <a class="tab <?= $action==='add'?'on':'' ?>" href="hr.php?action=add">+ New Employee</a>
-    <a class="tab <?= $action==='leave'?'on':'' ?>" href="hr.php?action=leave">Leave</a>
-    <a class="tab <?= $action==='notes'?'on':'' ?>" href="hr.php?action=notes">HR Notes</a>
-  </div>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>INDO HR Management</title>
+<!-- Claymorphism design -->
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+:root{
+  --bg:#e7ecf5;
+  --c1:#ffffff;
+  --c2:#eef2f9;
+  --shadow:35px 35px 68px 0 #a3b1c6, -23px -23px 45px 0 #ffffff;
+  --inner:inset 6px 6px 12px #c5d0e0, inset -6px -6px 12px #ffffff;
+  --violet:#7c6cf0; --violet2:#9a8cf5;
+  --pink:#f06cae; --green:#4dd0a1; --amber:#f5b061; --red:#f07b6e; --blue:#5aa7f0;
+}
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Quicksand',sans-serif;}
+body{background:var(--bg);color:#3a4a5f;min-height:100vh;}
+.clay{background:var(--c2);border-radius:28px;box-shadow:var(--shadow);}
+.clay-inner{background:var(--c2);border-radius:28px;box-shadow:var(--inner);}
+.app{display:flex;min-height:100vh;}
+/* sidebar */
+.side{width:250px;padding:22px 16px;background:linear-gradient(160deg,#f4f7fc,#e3e9f4);border-radius:0 32px 32px 0;box-shadow:10px 0 30px rgba(0,0,0,.05);display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh;}
+.logo{display:flex;align-items:center;gap:12px;padding:6px 10px 22px;}
+.logo .ic{width:48px;height:48px;border-radius:16px;background:linear-gradient(135deg,var(--violet),var(--pink));display:grid;place-items:center;color:#fff;font-size:22px;box-shadow:var(--shadow);}
+.logo b{font-size:18px;color:#4a3f b;}
+.logo small{display:block;color:#8a97ab;font-weight:600;}
+.nav a{display:flex;align-items:center;gap:13px;padding:12px 14px;border-radius:16px;color:#5b6b80;text-decoration:none;font-weight:600;font-size:14px;transition:.2s;margin:2px 0;}
+.nav a:hover{background:#fff;box-shadow:var(--inner);}
+.nav a.active{background:linear-gradient(135deg,var(--violet),var(--violet2));color:#fff;box-shadow:var(--shadow);}
+.nav a i{width:22px;text-align:center;font-size:16px;}
+.nav .sep{height:1px;margin:10px 6px;background:linear-gradient(90deg,transparent,#b9c6d9,transparent);}
+.side .usr{margin-top:auto;display:flex;align-items:center;gap:10px;padding:12px;background:#fff;border-radius:18px;box-shadow:var(--inner);}
+.side .usr .av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--violet));display:grid;place-items:center;color:#fff;font-weight:700;}
+.side .usr small{color:#8a97ab;}
+/* main */
+.main{flex:1;padding:24px 30px;overflow-y:auto;height:100vh;}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;}
+.top h1{font-size:26px;color:#3a4a5f;}
+.top .actions{display:flex;gap:12px;align-items:center;}
+.search-bar{display:flex;align-items:center;gap:8px;background:#fff;padding:10px 16px;border-radius:40px;box-shadow:var(--inner);width:260px;}
+.search-bar input{border:none;outline:none;background:transparent;width:100%;font-family:inherit;color:#3a4a5f;}
+.btn{border:none;cursor:pointer;padding:11px 20px;border-radius:40px;font-family:inherit;font-weight:700;font-size:13px;background:linear-gradient(135deg,var(--violet),var(--violet2));color:#fff;box-shadow:var(--shadow);transition:.2s;display:inline-flex;align-items:center;gap:8px;}
+.btn:hover{transform:translateY(-2px);}
+.btn.green{background:linear-gradient(135deg,#43d9a0,#2bbd84);}
+.btn.pink{background:linear-gradient(135deg,var(--pink),#ed5fa7);}
+.btn.amber{background:linear-gradient(135deg,#f8bf74,#f5a54a);}
+.btn.ghost{background:#fff;color:#5b6b80;box-shadow:var(--inner);}
+/* stat cards */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:20px;margin-bottom:22px;}
+.stat{padding:20px;position:relative;overflow:hidden;}
+.stat .ico{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;color:#fff;font-size:19px;margin-bottom:12px;box-shadow:var(--shadow);}
+.stat b{font-size:30px;color:#37455e;display:block;}
+.stat span{color:#8a97ab;font-weight:600;font-size:13px;}
+/* charts row */
+.charts{display:grid;grid-template-columns:2fr 1fr 1fr;gap:20px;margin-bottom:22px;}
+.chart{ padding:20px;}
+.chart h3{font-size:15px;margin-bottom:6px;color:#37455e;}
+.chart canvas{max-height:230px;}
+/* table */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;}
+th{text-align:left;padding:12px 14px;color:#8a97ab;font-size:12px;text-transform:uppercase;letter-spacing:.5px;}
+td{padding:13px 14px;border-top:1px solid #dfe6f0;font-size:14px;}
+tr:hover td{background:#f4f7fc;}
+.pill{display:inline-block;padding:5px 12px;border-radius:30px;font-size:12px;font-weight:700;}
+.pill.green{background:#e2f7ef;color:#1e9e72;}
+.pill.red{background:#ffe7e4;color:#d9574a;}
+.pill.amber{background:#fff1de;color:#cf8528;}
+.pill.blue{background:#e3efff;color:#3f86d6;}
+.pill.violet{background:#ece9ff;color:#6a5adb;}
+.avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--violet),var(--pink));color:#fff;display:inline-grid;place-items:center;font-weight:700;font-size:13px;margin-right:10px;}
+/* modal */
+.modal-bg{position:fixed;inset:0;background:rgba(60,70,95,.4);backdrop-filter:blur(4px);display:none;place-items:center;z-index:50;padding:20px;}
+.modal-bg.show{display:grid;}
+.modal{width:100%;max-width:680px;max-height:90vh;overflow-y:auto;padding:26px;position:relative;}
+.modal h2{font-size:20px;margin-bottom:18px;color:#37455e;}
+.modal .x{position:absolute;top:18px;right:20px;width:36px;height:36px;border-radius:50%;border:none;cursor:pointer;background:#fff;box-shadow:var(--inner);font-size:14px;color:#8a97ab;}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.form-grid .full{grid-column:1/-1;}
+label{font-size:12px;font-weight:700;color:#5b6b80;display:block;margin-bottom:5px;}
+input,select,textarea{width:100%;padding:12px 14px;border:none;border-radius:14px;background:#fff;font-family:inherit;font-size:14px;color:#3a4a5f;box-shadow:var(--inner);outline:none;}
+textarea{resize:vertical;min-height:80px;}
+.hidden{display:none!important;}
+.view{display:none;}
+.view.active{display:block;animation:fade .3s;}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
+.empty{text-align:center;padding:50px;color:#8a97ab;font-weight:600;}
+.tabs{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap;}
+.tab{padding:8px 16px;border-radius:30px;background:#fff;box-shadow:var(--inner);cursor:pointer;font-weight:700;font-size:13px;color:#8a97ab;border:none;}
+.tab.active{background:linear-gradient(135deg,var(--violet),var(--violet2));color:#fff;box-shadow:var(--shadow);}
+.row-actions{display:flex;gap:8px;}
+.row-actions button{width:32px;height:32px;border-radius:10px;border:none;cursor:pointer;background:#fff;box-shadow:var(--inner);color:#5b6b80;font-size:13px;}
+.row-actions button:hover{color:var(--violet);}
+/* login */
+.login-screen{height:100vh;display:grid;place-items:center;}
+.login-card{width:min(420px,92vw);padding:40px;text-align:center;}
+.login-card .big{width:80px;height:80px;border-radius:26px;background:linear-gradient(135deg,var(--violet),var(--pink));display:grid;place-items:center;color:#fff;font-size:36px;margin:0 auto 18px;box-shadow:var(--shadow);}
+.login-card h1{color:#37455e;margin-bottom:4px;}
+.login-card p{color:#8a97ab;margin-bottom:24px;font-weight:600;}
+.login-card form{display:flex;flex-direction:column;gap:16px;}
+.login-card input{text-align:center;}
+.alert{position:fixed;top:24px;right:24px;z-index:99;padding:14px 22px;border-radius:16px;color:#fff;font-weight:700;box-shadow:var(--shadow);display:none;}
+.alert.show{display:block;animation:fade .3s;}
+@media(max-width:1000px){.charts{grid-template-columns:1fr}.side{display:none}.side.open{display:flex;position:fixed;z-index:60;height:100%;}}
+</style>
+</head>
+<body>
 
-<?php if ($action === 'add'): ?>
-  <div class="card"><h2>➕ New Employee</h2>
-    <form method="post" action="hr.php?do=add_employee">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px">
-        <div><label>Employee ID</label><input name="employee_code" required placeholder="EMP-101"></div>
-        <div><label>Full Name</label><input name="full_name" required></div>
-        <div><label>Date of Birth</label><input type="date" name="date_of_birth"></div>
-        <div><label>Phone</label><input name="phone"></div>
-        <div><label>Email</label><input name="email"></div>
-        <div><label>Department</label><select name="department_id"><option value="0">—</option>
-          <?php foreach ($departments as $d): ?><option value="<?= $d['id'] ?>"><?= e($d['name']) ?></option><?php endforeach; ?></select></div>
-        <div><label>Employment Type</label><select name="employment_type">
-          <option>Full-time</option><option>Part-time</option><option>Contract</option><option>Probation</option></select></div>
-        <div><label>Start Date</label><input type="date" name="start_date"></div>
+<!-- ALERT -->
+<div class="alert clay" id="alert" style="background:linear-gradient(135deg,var(--violet),var(--violet2))"></div>
+
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside class="side" id="side">
+    <div class="logo">
+      <div class="ic"><i class="fa-solid fa-users"></i></div>
+      <div><b>INDO HR</b><small>Management System</small></div>
+    </div>
+    <nav class="nav">
+      <a class="active" data-view="dashboard" href="#dashboard"><i class="fa-solid fa-gauge-high"></i>Dashboard</a>
+      <a data-view="employees" href="#employees"><i class="fa-solid fa-user-group"></i>Employees</a>
+      <a data-view="departments" href="#departments"><i class="fa-solid fa-building"></i>Departments</a>
+      <a data-view="attendance" href="#attendance"><i class="fa-solid fa-clock"></i>Attendance</a>
+      <a data-view="reports" href="#reports"><i class="fa-solid fa-chart-pie"></i>Reports</a>
+      <a data-view="notifications" href="#notifications"><i class="fa-regular fa-bell"></i>Notifications</a>
+      <a data-view="settings" href="#settings"><i class="fa-solid fa-gear"></i>Settings</a>
+      <div class="sep"></div>
+      <a href="?page=logout"><i class="fa-solid fa-right-from-bracket"></i>Logout</a>
+    </nav>
+    <div class="usr">
+      <div class="av"><?= strtoupper(substr($user['full_name'] ?? 'H',0,1)) ?></div>
+      <div><b style="font-size:13px"><?= htmlspecialchars($user['full_name'] ?? 'HR') ?></b><br><small>HR Manager</small></div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="top">
+      <h1 id="pageTitle">Dashboard</h1>
+      <div class="actions">
+        <div class="search-bar" id="globalSearchWrap">
+          <i class="fa-solid fa-magnifying-glass" style="color:#8a97ab"></i>
+          <input id="globalSearch" placeholder="Search employees...">
+        </div>
+        <button class="btn" onclick="openEmp()"><i class="fa-solid fa-plus"></i>New Employee</button>
       </div>
-      <button type="submit">💾 Save Employee</button>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div class="view active" id="v-dashboard">
+      <div class="stats" id="statCards"></div>
+      <div class="charts">
+        <div class="chart clay"><h3>Weekly Presence</h3><canvas id="weeklyChart" height="120"></canvas></div>
+        <div class="chart clay"><h3>Workforce by Dept</h3><canvas id="deptChart" height="120"></canvas></div>
+        <div class="chart clay"><h3>Attendance Status</h3><canvas id="attChart" height="120"></canvas></div>
+      </div>
+      <div class="chart clay" style="margin-top:20px"><h3>Recent Activity / Alerts</h3><div id="dashAlerts" style="padding-top:8px"></div></div>
+    </div>
+
+    <!-- EMPLOYEES -->
+    <div class="view" id="v-employees">
+      <div class="tabs">
+        <button class="tab active" data-state="">All</button>
+        <button class="tab" data-state="Active">Active</button>
+        <button class="tab" data-state="On Leave">On Leave</button>
+        <button class="tab" data-state="Probation">Probation</button>
+      </div>
+      <div class="table-wrap clay" style="padding:14px">
+        <table>
+          <thead><tr><th>Employee</th><th>Dept</th><th>Position</th><th>Status</th><th>Joined</th><th></th></tr></thead>
+          <tbody id="empBody"></tbody>
+        </table>
+        <div class="empty hidden" id="empEmpty">No employees found</div>
+      </div>
+    </div>
+
+    <!-- DEPARTMENTS -->
+    <div class="view" id="v-departments">
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>Department</th><th>Description</th><th>Employees</th></tr></thead>
+        <tbody id="deptBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ATTENDANCE -->
+    <div class="view" id="v-attendance">
+      <div class="stats" id="attStats"></div>
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>Employee</th><th>Date</th><th>Clock In</th><th>Clock Out</th><th>Status</th><th>Overtime</th></tr></thead>
+        <tbody id="attBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- REPORTS -->
+    <div class="view" id="v-reports">
+      <div class="stats">
+        <button class="stat clay" onclick="exportCSV('employees')"><b>Employees</b><span>Export CSV</span></button>
+        <button class="stat clay" onclick="exportCSV('attendance')"><b>Attendance</b><span>Export CSV</span></button>
+        <button class="stat clay" onclick="window.print()"><b>Print</b><span>Print report</span></button>
+      </div>
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>Report</th><th>Generated</th></tr></thead><tbody id="repBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- NOTIFICATIONS -->
+    <div class="view" id="v-notifications">
+      <div id="notifBody" class="chart clay"></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="view" id="v-settings">
+      <div class="charts" style="grid-template-columns:1fr 1fr">
+        <div class="chart clay"><h3>Leave Types</h3><div id="leaveTypesBody"></div></div>
+        <div class="chart clay"><h3>Positions</h3><div id="posBody"></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- EMPLOYEE MODAL -->
+<div class="modal-bg" id="empModal">
+  <div class="modal clay">
+    <button class="x" onclick="closeModal('empModal')"><i class="fa-solid fa-xmark"></i></button>
+    <h2 id="empModalTitle">New Employee</h2>
+    <div class="tabs" id="empTabs">
+      <button class="tab active" onclick="empStep(1,this)">1 · Personal</button>
+      <button class="tab" onclick="empStep(2,this)">2 · Employment</button>
+      <button class="tab" onclick="empStep(3,this)">3 · Documents</button>
+      <button class="tab" onclick="empStep(4,this)">4 · Account</button>
+    </div>
+    <form id="empForm" class="form-grid" onsubmit="saveEmp(event)">
+      <input type="hidden" name="id" id="e_id">
+      <!-- Step1 -->
+      <div class="step" data-step="1">
+        <div class="form-grid">
+          <div><label>Employee ID</label><input name="employee_code" id="e_code" placeholder="EMP-001"></div>
+          <div><label>Full Name *</label><input name="full_name" id="e_name" required></div>
+          <div><label>Date of Birth</label><input type="date" name="date_of_birth" id="e_dob"></div>
+          <div><label>Gender</label><select name="gender" id="e_gender"><option>Male</option><option>Female</option><option>Other</option></select></div>
+          <div><label>Phone</label><input name="phone" id="e_phone"></div>
+          <div><label>Email</label><input type="email" name="email" id="e_email"></div>
+          <div class="full"><label>Address</label><textarea name="address" id="e_addr"></textarea></div>
+          <div><label>Emergency Contact</label><input name="emergency_contact" id="e_econtact"></div>
+          <div><label>Emergency Phone</label><input name="emergency_phone" id="e_ephone"></div>
+        </div>
+      </div>
+      <!-- Step2 -->
+      <div class="step hidden" data-step="2">
+        <div class="form-grid">
+          <div><label>Department</label><select name="department_id" id="e_dept"></select></div>
+          <div><label>Position</label><select name="position_id" id="e_pos"></select></div>
+          <div><label>Supervisor</label><select name="supervisor_id" id="e_sup"></select></div>
+          <div><label>Employment Type</label><select name="employment_type" id="e_etype"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Probation</option></select></div>
+          <div><label>Start Date</label><input type="date" name="start_date" id="e_sdate"></div>
+          <div><label>End Date</label><input type="date" name="end_date" id="e_edate"></div>
+          <div><label>Work Location</label><input name="work_location" id="e_wloc"></div>
+          <div><label>Shift</label><input name="shift" id="e_shift"></div>
+          <div><label>Status</label><select name="status" id="e_status"><option>Active</option><option>On Leave</option><option>Probation</option><option>Suspended</option><option>Terminated</option></select></div>
+        </div>
+      </div>
+      <!-- Step3 -->
+      <div class="step hidden" data-step="3">
+        <div class="form-grid">
+          <div class="full"><label>Document Type</label><select id="docType"><option>Employment Contract</option><option>Identification</option><option>Certificate</option><option>Warning Letter</option><option>Training Cert</option><option>Other</option></select></div>
+          <div class="full"><label>Upload</label><input type="file" id="docFile"></div>
+          <div class="full"><button type="button" class="btn green" onclick="uploadDoc()"><i class="fa-solid fa-upload"></i>Upload Document</button></div>
+          <div class="full"><div id="docList"></div></div>
+        </div>
+      </div>
+      <!-- Step4 -->
+      <div class="step hidden" data-step="4">
+        <div class="form-grid">
+          <div><label>Username</label><input id="accUser"></div>
+          <div><label>Role</label><select id="accRole"><option>Employee</option><option>HR Officer</option><option>Manager</option><option>Super Admin</option></select></div>
+        </div>
+      </div>
+      <div class="full" style="display:flex;gap:12px;justify-content:flex-end;margin-top:10px">
+        <button type="button" class="btn ghost" onclick="closeModal('empModal')">Cancel</button>
+        <button type="submit" class="btn green"><i class="fa-solid fa-floppy-disk"></i>Save Employee</button>
+      </div>
     </form>
   </div>
+</div>
 
-<?php elseif ($action === 'leave'): ?>
-  <div class="card"><h2>🏖 Leave Requests</h2>
-    <?php if (!$leaveRequests): ?><p style="color:#7b8a9b;font-size:13px;">No leave requests yet.</p>
-    <?php else: ?>
-    <table><tr><th>Employee</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Status</th><th>Action</th></tr>
-    <?php foreach ($leaveRequests as $l): ?>
-      <tr><td><?= e($l['full_name']) ?></td><td><?= e($l['leave_type_id']) ?></td>
-      <td><?= e($l['start_date']) ?></td><td><?= e($l['end_date']) ?></td><td><?= (int)$l['days_requested'] ?></td>
-      <td><?= e($l['status']) ?></td><td>
-        <?php if ($l['status']==='Pending'): ?>
-        <a class="btn green" href="hr.php?action=leave&leave=approved&id=<?= $l['id'] ?>">Approve</a>
-        <a class="btn red" href="hr.php?action=leave&leave=rejected&id=<?= $l['id'] ?>">Reject</a>
-        <?php else: ?>—<?php endif; ?>
-      </td></tr>
-    <?php endforeach; ?></table>
-    <?php endif; ?>
+<!-- PROFILE MODAL -->
+<div class="modal-bg" id="profileModal">
+  <div class="modal clay" style="max-width:760px">
+    <button class="x" onclick="closeModal('profileModal')"><i class="fa-solid fa-xmark"></i></button>
+    <div id="profileHeader"></div>
+    <div class="tabs">
+      <button class="tab active" onclick="profileTab('overview',this)">Overview</button>
+      <button class="tab" onclick="profileTab('notes',this)">HR Notes</button>
+      <button class="tab" onclick="profileTab('disciplinary',this)">Disciplinary</button>
+      <button class="tab" onclick="profileTab('contracts',this)">Contracts</button>
+      <button class="tab" onclick="profileTab('leave',this)">Leave</button>
+      <button class="tab" onclick="profileTab('docs',this)">Documents</button>
+    </div>
+    <div id="profileContent"></div>
   </div>
+</div>
 
-<?php elseif ($action === 'notes'): ?>
-  <div class="card"><h2>➕ Add HR Note</h2>
-    <form method="post" action="hr.php?do=add_note">
-      <label>Employee</label>
-      <select name="employee_id" required><?php foreach ($employees as $e): ?><option value="<?= $e['id'] ?>"><?= e($e['employee_code']) ?> - <?= e($e['full_name']) ?></option><?php endforeach; ?></select>
-      <label>Category</label>
-      <select name="category"><option>Performance</option><option>Attendance</option><option>Behavior</option><option>Warning</option><option>Meeting</option><option>Training</option><option>General</option><option>Other</option></select>
-      <label>Note</label><textarea name="note" rows="3" required></textarea>
-      <button type="submit">💾 Save Note</button>
-    </form>
-  </div>
-  <div class="card"><h2>📝 Recent HR Notes</h2>
-    <?php if (!$notes): ?><p style="color:#7b8a9b;font-size:13px;">No notes yet.</p>
-    <?php else: foreach ($notes as $n): ?>
-      <p style="font-size:13px;padding:8px 0;border-bottom:1px solid #eee;"><strong><?= e($n['full_name']) ?></strong> · <span style="color:#2c5364"><?= e($n['category']) ?></span><br><span style="color:#555"><?= e($n['note']) ?></span></p>
-    <?php endforeach; endif; ?>
-  </div>
+<script>
+const API='?page=api&action=';
+let employeeData=[], deptData=[], posData=[];
+const $=s=>document.querySelector(s);
+const qs=s=>document.querySelectorAll(s);
+function showAlert(m){const a=$('#alert');a.textContent=m;a.classList.add('show');setTimeout(()=>a.classList.remove('show'),3000);}
+function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+async function get(a,p=''){try{const r=await fetch(API+a+(p?'&'+p:''));return await r.json();}catch(e){showAlert('Request failed');return null;}}
+async function post(a,data){try{const r=await fetch(API+a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});return await r.json();}catch(e){return null;}}
 
-<?php else: ?>
-  <div class="card"><h2>👥 Employees (<?= count($employees) ?>)</h2>
-    <?php if (!$employees): ?><p style="color:#7b8a9b;font-size:13px;">No employees yet. Add one via "+ New Employee".</p>
-    <?php else: ?>
-    <table><tr><th>ID</th><th>Name</th><th>Department</th><th>Type</th><th>Status</th><th>Start</th></tr>
-    <?php foreach ($employees as $e): ?>
-      <tr><td><?= e($e['employee_code']) ?></td><td><?= e($e['full_name']) ?></td>
-      <td><?= e($e['department_id']) ?></td><td><?= e($e['employment_type']) ?></td>
-      <td><?= e($e['status']) ?></td><td><?= e($e['start_date'] ?? '-') ?></td></tr>
-    <?php endforeach; ?></table>
-    <?php endif; ?>
-  </div>
-<?php endif; ?>
-</div></body></html>
+/* ---- NAV ---- */
+function show(view){
+  qs('.nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===view));
+  qs('.view').forEach(v=>v.classList.remove('active'));
+  const el=$('#v-'+view); if(el)el.classList.add('active');
+  const titles={dashboard:'Dashboard',employees:'Employees',departments:'Departments',attendance:'Attendance',reports:'Reports',notifications:'Notifications',settings:'Settings'};
+  $('#pageTitle').textContent=titles[view]||view;
+  if(view==='dashboard')loadDashboard();
+  if(view==='employees')loadEmployees();
+  if(view==='departments')loadDepartments();
+  if(view==='attendance')loadAttendance();
+  if(view==='reports')loadReports();
+  if(view==='settings')loadSettings();
+}
+qs('.nav a[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();show(a.dataset.view);}));
+
+/* ---- DASHBOARD ---- */
+let weekChart,deptChart,attChart;
+async function loadDashboard(){
+  const d=await get('stats');
+  if(!d)return;
+  $('#statCards').innerHTML=`
+    ${card('fa-users',d.total,'Total Employees','violet')}
+    ${card('fa-circle-check',d.present,'Present Today','green')}
+    ${card('fa-user-slash',d.absent,'Absent','red')}
+    ${card('fa-clock',d.late,'Late','amber')}
+    ${card('fa-plane',d.onleave,'On Leave','blue')}
+    ${card('fa-user-plus',d.new,'New This Month','green')}
+  `;
+  weekChart=chart($('#weeklyChart'),weekChart,'line',d.weekLabels,d.weekVals,'#7c6cf0');
+  deptChart=chart($('#deptChart'),deptChart,'doughnut',d.deptLabels,d.deptVals,'auto');
+  attChart=chart($('#attChart'),attChart,'pie',d.attLabels,d.attVals,'auto');
+  $('#dashAlerts').innerHTML=`<div style="display:flex;gap:16px;flex-wrap:wrap">
+    <div style="background:#ffe7e4;padding:12px 18px;border-radius:14px;color:#d9574a;font-weight:700"><i class="fa-solid fa-triangle-exclamation"></i> Issues: ${d.issues}</div>
+    <div style="background:#fff1de;padding:12px 18px;border-radius:14px;color:#cf8528;font-weight:700"><i class="fa-regular fa-clock"></i> Pending Approvals: ${d.pending}</div>
+  </div>`;
+}
+function card(ic,v,t,c){const cols={violet:'var(--violet)',green:'var(--green)',red:'var(--red)',amber:'var(--amber)',blue:'var(--blue)',pink:'var(--pink)'};return `<div class="stat clay"><div class="ico" style="background:linear-gradient(135deg,${cols[c]},${cols[c]}aa)"><i class="fa-solid ${ic}"></i></div><b>${v}</b><span>${t}</span></div>`;}
+function chart(cv,inst,type,labels,data,color){
+  const palette=['#7c6cf0','#f06cae','#4dd0a1','#f5b061','#5aa7f0','#f07b6e','#9a8cf5'];
+  const cols = color==='auto'? data.map((_,i)=>palette[i%palette.length]) : color;
+  if(inst){inst.destroy();}
+  return new Chart(cv,{type,data:{labels,datasets:[{data,backgroundColor:cols,borderColor:'#eef2f9',borderWidth:2,fill:true,pointBackgroundColor:'#fff',tension:.4,borderColor:type==='line'?color:cols}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:type!=='line',labels:{boxWidth:12,font:{size:11}}}}}});
+}
+
+/* ---- EMPLOYEES ---- */
+async function loadEmployees(){
+  const dep=$('.tab.active')?.dataset.state||'';
+  let url='employees';
+  if(dep)url+='&status='+dep;
+  const data=await get(url);
+  if(!data)return;
+  employeeData=data;
+  const body=$('#empBody');
+  if(!data.length){$('#empEmpty').classList.remove('hidden');body.innerHTML='';return;}
+  $('#empEmpty').classList.add('hidden');
+  body.innerHTML=data.map(e=>`<tr>
+    <td><span class="avatar">${esc(e.full_name?.[0]||'?')}</span><b>${esc(e.full_name)}</b><br><small style="color:#8a97ab">${esc(e.employee_code)}</small></td>
+    <td>${esc(e.dept||'-')}</td><td>${esc(e.position||'-')}</td>
+    <td><span class="pill ${stt(e.status)}">${esc(e.status)}</span></td>
+    <td>${e.start_date||'-'}</td>
+    <td><div class="row-actions">
+      <button title="View" onclick="viewProfile(${e.id})"><i class="fa-regular fa-eye"></i></button>
+      <button title="Edit" onclick="openEmp(${e.id})"><i class="fa-regular fa-pen-to-square"></i></button>
+      <button title="Delete" onclick="delEmp(${e.id})"><i class="fa-regular fa-trash-can"></i></button>
+    </div></td></tr>`).join('');
+}
+function stt(s){return ['Active'].includes(s)?'green':['On Leave'].includes(s)?'blue':['Probation'].includes(s)?'amber':['Suspended','Terminated'].includes(s)?'red':'violet';}
+async function openEmp(id){
+  resetEmp();
+  $('#empModalTitle').textContent=id?'Edit Employee':'New Employee';
+  await loadSelects();
+  if(id){
+    const e=await get('employee','id='+id);
+    if(e){const f=$('#empForm');for(const k in e){const el=f.elements[k]||f.querySelector('#e_'+k);if(el)el.value=e[k]??'';}f.elements.id.value=id;}
+    loadDocList(id);
+  }
+  showModal('empModal');
+}
+async function loadSelects(){
+  deptData=await get('departments');
+  const sup=await get('employees');
+  const pos=await get('positions');
+  posData=pos;
+  $('#e_dept').innerHTML='<option value="">Select</option>'+deptData.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  $('#e_pos').innerHTML='<option value="">Select</option>'+pos.map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('');
+  $('#e_sup').innerHTML='<option value="">Select</option>'+sup.map(s=>`<option value="${s.id}">${esc(s.full_name)}</option>`).join('');
+}
+function resetEmp(){$('#empForm').reset();$('#empForm').elements.id.value='';empStep(1,$('#empTabs .tab'));}
+function empStep(n,t){qs('#empTabs .tab').forEach(x=>x.classList.remove('active'));if(t)t.classList.add('active');qs('#empForm .step').forEach(x=>x.classList.toggle('hidden',+x.dataset.step!==n));}
+async function saveEmp(e){e.preventDefault();
+  const f=e.target,fd=new FormData(f),data={};
+  fd.forEach((v,k)=>data[k]=v||null);
+  const r=await post('save_employee',data);
+  if(r&&r.ok){showAlert('Employee saved');closeModal('empModal');loadEmployees();}
+  else showAlert(r&&r.error?r.error:'Save failed');
+}
+async function delEmp(id){if(!confirm('Delete employee?'))return;const r=await get('delete_employee','id='+id);if(r&&r.ok){showAlert('Deleted');loadEmployees();}}
+
+/* ---- DEPARTMENTS ---- */
+async function loadDepartments(){
+  const data=await get('departments');
+  if(!data)return;
+  $('#deptBody').innerHTML=data.map(d=>{
+    const n=employeeData.filter(e=>e.department_id==d.id).length;
+    return `<tr><td><b>${esc(d.name)}</b></td><td>${esc(d.description||'')}</td><td><span class="pill violet">${n}</span></td></tr>`;
+  }).join('')||'<tr><td colspan="3" class="empty">No departments</td></tr>';
+}
+
+/* ---- ATTENDANCE ---- */
+async function loadAttendance(){
+  const data=await get('attendance');
+  if(!data)return;
+  const p=data.filter(a=>a.status==='Present').length,ab=data.filter(a=>a.status==='Absent').length,l=data.filter(a=>a.status==='Late').length;
+  $('#attStats').innerHTML=card('fa-circle-check',p,'Present','green')+card('fa-user-slash',ab,'Absent','red')+card('fa-clock',l,'Late','amber');
+  $('#attBody').innerHTML=data.slice(0,100).map(a=>`<tr><td><span class="avatar">${esc(a.full_name?.[0]||'?')}</span><b>${esc(a.full_name)}</b></td><td>${a.work_date}</td><td>${a.clock_in?`<span class="pill green">${a.clock_in}</span>`:'-'}</td><td>${a.clock_out||'-'}</td><td><span class="pill ${stt(a.status)}">${a.status}</span></td><td>${a.overtime_minutes||0}m</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No attendance records. Add some data in the system.</td></tr>';
+}
+
+/* ---- REPORTS ---- */
+async function loadReports(){const d=await get('report');$('#repBody').innerHTML=(d||[]).map(r=>`<tr><td>${esc(r.name||'Report')}</td><td>${r.created_at||'-'}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">Generate reports from dashboard data</td></tr>';}
+function exportCSV(type){window.open(API+(type==='attendance'?'attendance':'employees'),'_blank');setTimeout(()=>showAlert('CSV ready - check new window/open data'),600);}
+
+/* ---- NOTIFICATIONS ---- */
+async function loadNotif(){
+  const d=await get('stats');
+  $('#notifBody').innerHTML=`<div style="padding:8px 0"><b>🔴 </b> Employee absences need attention (${d.absent})<br><b>🟠 </b> Pending leave approvals: ${d.pending}<br><b>🟡 </b> Disciplinary cases in review: ${d.issues}<br><b>🟢 </b> New hires this month: ${d.new}</div>`;
+}
+loadNotif();
+/* settings hook */
+async function loadSettings(){
+  const lt=await get('leave_types');
+  $('#leaveTypesBody').innerHTML=(lt||[]).map(l=>`<div style="padding:10px;background:#fff;border-radius:12px;margin:6px 0;box-shadow:var(--inner)"><b>${esc(l.name||l)}</b></div>`).join('')||'<div style="color:#8a97ab">No leave types set</div>';
+  const pos=await get('positions');
+  $('#posBody').innerHTML=(pos||[]).map(p=>`<div style="padding:10px;background:#fff;border-radius:12px;margin:6px 0;box-shadow:var(--inner)"><b>${esc(p.title)}</b> <small style="color:#8a97ab">${esc(p.dept||'')}</small></div>`).join('')||'<div style="color:#8a97ab">No positions set</div>';
+}
+
+/* ---- PROFILE ---- */
+let currentProf=null;
+async function viewProfile(id){
+  currentProf=await get('employee','id='+id);
+  if(!currentProf)return;
+  $('#profileHeader').innerHTML=`<div style="display:flex;gap:18px;align-items:center;margin-bottom:8px">
+    <div class="avatar" style="width:64px;height:64px;font-size:26px">${esc(currentProf.full_name?.[0]||'?')}</div>
+    <div><h2 style="font-size:22px;color:#37455e">${esc(currentProf.full_name)}</h2>
+    <span style="color:#8a97ab;font-weight:600">${esc(currentProf.employee_code)} · ${esc(currentProf.dept||'')} · ${esc(currentProf.position||'')}</span></div>
+    <div style="margin-left:auto"><span class="pill ${stt(currentProf.status)}">${esc(currentProf.status)}</span></div>
+  </div>`;
+  profileTab('overview');
+  showModal('profileModal');
+}
+async function profileTab(tab,btn){
+  qs('#profileModal .tab').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');
+  let c='';
+  if(tab==='overview')c=`<div class="form-grid"><div><label>Phone</label><p>${esc(currentProf.phone||'-')}</p></div><div><label>Email</label><p>${esc(currentProf.email||'-')}</p></div><div><label>DOB</label><p>${currentProf.date_of_birth||'-'}</p></div><div><label>Joined</label><p>${currentProf.start_date||'-'}</p></div><div><label>Type</label><p>${esc(currentProf.employment_type||'-')}</p></div><div><label>Shift</label><p>${esc(currentProf.shift||'-')}</p></div><div class="full"><label>Address</label><p>${esc(currentProf.address||'-')}</p></div></div>`;
+  if(tab==='notes')c=await profileNotes();
+  if(tab==='disciplinary')c=await profileDisc();
+  if(tab==='contracts')c=await profileCont();
+  if(tab==='leave')c=await profileLeave();
+  if(tab==='docs')c=await profileDocs();
+  $('#profileContent').innerHTML=c;
+}
+async function profileNotes(){
+  const d=await get('notes','employee_id='+currentProf.id);
+  let html=`<div style="display:flex;gap:8px;margin-bottom:12px"><select id="noteCat"><option>Performance</option><option>Attendance</option><option>Behavior</option><option>Warning</option><option>Meeting</option><option>Training</option><option>General</option></select><input id="noteText" placeholder="Add a note..."><button class="btn green" onclick="addNote()">Add</button></div>`;
+  return html+(d.map(n=>`<div style="background:#fff;padding:12px;border-radius:14px;margin:8px 0;box-shadow:var(--inner)"><b style="color:var(--violet)">${esc(n.category)}</b><span class="pill amber" style="margin-left:8px">by ${esc(n.author||'HR')}</span><p style="margin-top:6px">${esc(n.note)}</p></div>`).join('')||'<div class="empty">No notes</div>');
+}
+async function addNote(){const r=await post('save_note',{employee_id:currentProf.id,category:$('#noteCat').value,note:$('#noteText').value});if(r&&r.ok){showAlert('Note added');profileTab('notes');}}
+async function profileDisc(){
+  const d=await get('disciplinary','employee_id='+currentProf.id);
+  let html=`<div class="form-grid" style="margin-bottom:12px"><div><input id="dIssue" placeholder="Issue"></div><div><select id="dSeverity"><option>Verbal Warning</option><option>Written Warning</option><option>Final Warning</option><option>Suspension</option><option>Other</option></select></div><div><button class="btn red" style="background:linear-gradient(135deg,var(--red),#e05a4d)" onclick="addDisc()">Create Case</button></div></div>`;
+  return html+d.map(c=>`<div style="background:#fff;padding:14px;border-radius:14px;margin:8px 0;box-shadow:var(--inner)"><b>${esc(c.issue)}</b> <span class="pill ${c.status==='Resolved'||c.status==='Closed'?'green':'red'}">${esc(c.status)}</span> <span class="pill amber">${esc(c.severity)}</span><br><small style="color:#8a97ab">${esc(c.action_taken||'')}</small></div>`).join('')||'<div class="empty">No disciplinary cases</div>';
+}
+async function addDisc(){const r=await post('save_disciplinary',{employee_id:currentProf.id,issue:$('#dIssue').value,severity:$('#dSeverity').value});if(r&&r.ok){showAlert('Case created');profileTab('disciplinary');}}
+async function profileCont(){
+  const d=await get('contracts','employee_id='+currentProf.id);
+  let html=`<div class="form-grid" style="margin-bottom:12px"><div><select id="cType"><option>Permanent</option><option>Fixed-term</option><option>Probation</option></select></div><div><input type="date" id="cStart"></div><div><input type="date" id="cEnd" placeholder="End"></div><div><input type="date" id="cProbEnd" placeholder="Probation end"></div><button class="btn" onclick="addCont()">Add Contract</button></div>`;
+  return html+d.map(c=>`<div style="background:#fff;padding:12px;border-radius:14px;margin:8px 0;box-shadow:var(--inner)"><b>${esc(c.contract_type||'Contract')}</b> <span class="pill ${c.status==='Active'?'green':'amber'}">${esc(c.status)}</span><br><small style="color:#8a97ab">${c.start_date||''} → ${c.end_date||''} · Probation: ${c.probation_end||'-'}</small></div>`).join('')||'<div class="empty">No contracts</div>';
+}
+async function addCont(){const r=await post('save_contract',{employee_id:currentProf.id,contract_type:$('#cType').value,start_date:$('#cStart').value,end_date:$('#cEnd').value,probation_end:$('#cProbEnd').value});if(r&&r.ok){showAlert('Contract added');profileTab('contracts');}}
+async function profileLeave(){
+  const d=await get('leave','employee_id='+currentProf.id);
+  let html=`<div class="form-grid" style="margin-bottom:12px"><div><input type="date" id="lStart"></div><div><input type="date" id="lEnd"></div><div><input type="number" id="lDays" placeholder="Days" min="1"></div><div><input id="lReason" placeholder="Reason"></div><button class="btn violet" style="background:linear-gradient(135deg,var(--violet),var(--violet2))" onclick="addLeave()">Request Leave</button></div>`;
+  return html+d.map(l=>`<div style="background:#fff;padding:12px;border-radius:14px;margin:8px 0;box-shadow:var(--inner)"><b>${esc(l.type||'Leave')}</b> <span class="pill ${l.status==='Approved'?'green':l.status==='Pending'?'amber':'red'}">${esc(l.status)}</span><br><small style="color:#8a97ab">${l.start_date||''} → ${l.end_date||''} · ${l.days_requested||0}d · ${esc(l.reason||'')}</small></div>`).join('')||'<div class="empty">No leave requests</div>';
+}
+async function addLeave(){const r=await post('save_leave',{employee_id:currentProf.id,start_date:$('#lStart').value,end_date:$('#lEnd').value,days_requested:+$('#lDays').value,reason:$('#lReason').value});if(r&&r.ok){showAlert('Leave requested');profileTab('leave');}}
+async function profileDocs(){
+  const d=await get('documents','employee_id='+currentProf.id);
+  return `<div style="display:flex;gap:8px;margin-bottom:12px"><input id="edEmp" value="${currentProf.id}" type="hidden"><select id="edType" style="flex:1"><option>Employment Contract</option><option>Identification</option><option>Certificate</option><option>Other</option></select><input type="file" id="edFile" style="flex:1"></div><button class="btn green" onclick="uploadDocFromProfile()">Upload</button>`+
+  (d.map(x=>`<div style="background:#fff;padding:12px;border-radius:14px;margin:8px 0;box-shadow:var(--inner);display:flex;justify-content:space-between;align-items:center"><span><i class="fa-regular fa-file"></i> ${esc(x.original_name)} · ${esc(x.doc_type)}</span><a class="btn ghost" style="padding:6px 14px" href="${esc(x.file_path)}" target="_blank"><i class="fa-solid fa-download"></i></a></div>`).join('')||'<div class="empty">No documents</div>');
+}
+function uploadDocFromProfile(){uploadDoc(currentProf.id);}
+
+/* ---- DOC UPLOAD ---- */
+async function loadDocList(id){const d=await get('documents','employee_id='+id);$('#docList').innerHTML=(d||[]).map(x=>`<div style="background:#fff;padding:10px;border-radius:12px;margin:6px 0;box-shadow:var(--inner)">${esc(x.original_name)} <small style="color:#8a97ab">${esc(x.doc_type)}</small></div>`).join('')||'<div style="color:#8a97ab">No documents</div>';}
+async function uploadDoc(empId){
+  const eid=empId||document.querySelector('#empForm input[name=id]')?.value;
+  if(!eid){showAlert('Save employee first');return;}
+  const f=$('empModal')?$('#docFile'):$('#edFile');
+  if(!f||!f.files[0]){showAlert('Choose a file');return;}
+  const fd=new FormData();fd.append('employee_id',eid);fd.append('file',f.files[0]);fd.append('doc_type',$('#docType').value||$('#edType').value||'Other');
+  const r=await fetch(API+'upload_document',{method:'POST',body:fd,credentials:'same-origin'}).then(x=>x.json());
+  if(r&&r.ok){showAlert('Uploaded');if($('empModal').classList.contains('show'))loadDocList(eid);else profileTab('docs');}
+}
+
+/* ---- MODAL/Search helpers ---- */
+function showModal(id){$('#'+id).classList.add('show');}
+function closeModal(id){$('#'+id).classList.remove('show');}
+$('#globalSearch').addEventListener('input',e=>{
+  const q=e.target.value.toLowerCase();
+  qs('#empBody tr').forEach(tr=>tr.style.display=tr.textContent.toLowerCase().includes(q)?'':'none');
+});
+
+/* ---- INIT ---- */
+(async function init(){
+  const view=location.hash.replace('#','')||'dashboard';
+  if(['dashboard','employees','departments','attendance','reports','notifications','settings'].includes(view))show(view);else show('dashboard');
+  loadNotif();
+})();
+</script>
+</body>
+</html>

@@ -188,13 +188,14 @@ if ($page === 'api') {
             echo json_encode(['ok'=>true]); break;
         }
         case 'attendance': {
-            $dep = $_GET['dep'] ?? '';
-            $sql = "SELECT a.*, e.full_name, e.employee_code, d.name dept, e.id eid FROM attendance_records a
-                    JOIN employees e ON a.employee_id=e.id LEFT JOIN departments d ON e.department_id=d.id WHERE 1=1";
-            $types=''; $args=[];
-            if ($dep) { $sql.=" AND e.department_id=?"; $types.='i'; $args[]=$dep; }
-            $sql.=" ORDER BY a.work_date DESC LIMIT 200";
-            echo json_encode(q($sql,$types,$args)); break;
+                    $dep = $_GET['dep'] ?? ''; $eid = (int)($_GET['employee_id'] ?? 0);
+                    $sql = "SELECT a.*, e.full_name, e.employee_code, d.name dept, e.id eid FROM attendance_records a
+                            JOIN employees e ON a.employee_id=e.id LEFT JOIN departments d ON e.department_id=d.id WHERE 1=1";
+                    $types=''; $args=[];
+                    if ($dep) { $sql.=" AND e.department_id=?"; $types.='i'; $args[]=$dep; }
+                    if ($eid) { $sql.=" AND a.employee_id=?"; $types.='i'; $args[]=$eid; }
+                    $sql.=" ORDER BY a.work_date DESC LIMIT 200";
+                    echo json_encode(q($sql,$types,$args)); break;
         }
         case 'documents': {
             $id = (int)($_GET['employee_id'] ?? 0);
@@ -252,12 +253,18 @@ if ($page === 'api') {
             echo json_encode(['ok'=>true]); break;
         }
         case 'delete_employee': {
-            $id = (int)$_GET['id'];
-            q("DELETE FROM employees WHERE id=?",'i',[$id]);
-            echo json_encode(['ok'=>true]); break;
-        }
-        default: echo json_encode(['error' => 'Unknown action']);
-        }
+                    $id = (int)$_GET['id'];
+                    q("DELETE FROM employees WHERE id=?",'i',[$id]);
+                    echo json_encode(['ok'=>true]); break;
+                }
+                case 'deactivate_employee': {
+                    $id = (int)$_GET['id'];
+                    q("UPDATE employees SET status='Suspended' WHERE id=?",'i',[$id]);
+                    q("INSERT INTO audit_logs (user_id,action,module,details) VALUES (?,'deactivated_employee','hr',?)",'is',[$me['id']??null,'Employee #'.$id]);
+                    echo json_encode(['ok'=>true]); break;
+                }
+                default: echo json_encode(['error' => 'Unknown action']);
+                        }
     } catch (Throwable $e) {
         echo json_encode(['error' => $e->getMessage()]);
     }
@@ -531,21 +538,27 @@ textarea{resize:vertical;min-height:80px;}
     </div>
 
     <!-- EMPLOYEES -->
-    <div class="view" id="v-employees">
-      <div class="tabs">
-        <button class="tab active" data-state="">All</button>
-        <button class="tab" data-state="Active">Active</button>
-        <button class="tab" data-state="On Leave">On Leave</button>
-        <button class="tab" data-state="Probation">Probation</button>
-      </div>
-      <div class="table-wrap clay" style="padding:14px">
-        <table>
-          <thead><tr><th>Employee</th><th>Dept</th><th>Position</th><th>Status</th><th>Joined</th><th></th></tr></thead>
-          <tbody id="empBody"></tbody>
-        </table>
-        <div class="empty hidden" id="empEmpty">No employees found</div>
-      </div>
-    </div>
+        <div class="view" id="v-employees">
+          <div class="chart clay" style="padding:16px;margin-bottom:16px">
+            <div class="search-bar" style="margin-bottom:12px">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <input id="empSearch" placeholder="Search name or employee ID..." oninput="filterEmps()" style="flex:1;border:none;outline:none;background:none;font-size:14px">
+            </div>
+            <div style="display:flex;gap:12px;flex-wrap:wrap">
+              <select id="empDepFilter" onchange="filterEmps()" style="padding:9px 12px;border-radius:12px;border:1px solid #dfe4ec;background:#fff;flex:1;min-width:140px"><option value="">Department ▼ (All)</option></select>
+              <select id="empStatusFilter" onchange="filterEmps()" style="padding:9px 12px;border-radius:12px;border:1px solid #dfe4ec;background:#fff;flex:1;min-width:130px"><option value="">Status ▼ (All)</option><option>Active</option><option>On Leave</option><option>Probation</option><option>Suspended</option><option>Terminated</option></select>
+              <select id="empPosFilter" onchange="filterEmps()" style="padding:9px 12px;border-radius:12px;border:1px solid #dfe4ec;background:#fff;flex:1;min-width:140px"><option value="">Position ▼ (All)</option></select>
+              <button class="btn" onclick="openEmp()"><i class="fa-solid fa-plus"></i> New</button>
+            </div>
+          </div>
+          <div class="table-wrap clay" style="padding:14px">
+            <table>
+              <thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Position</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="empBody"></tbody>
+            </table>
+            <div class="empty hidden" id="empEmpty">No employees found</div>
+          </div>
+        </div>
 
     <!-- DEPARTMENTS -->
     <div class="view" id="v-departments">
@@ -835,14 +848,18 @@ textarea{resize:vertical;min-height:80px;}
   <div class="modal clay" style="max-width:760px">
     <button class="x" onclick="closeModal('profileModal')"><i class="fa-solid fa-xmark"></i></button>
     <div id="profileHeader"></div>
-    <div class="tabs">
-      <button class="tab active" onclick="profileTab('overview',this)">Overview</button>
-      <button class="tab" onclick="profileTab('notes',this)">HR Notes</button>
-      <button class="tab" onclick="profileTab('disciplinary',this)">Disciplinary</button>
-      <button class="tab" onclick="profileTab('contracts',this)">Contracts</button>
-      <button class="tab" onclick="profileTab('leave',this)">Leave</button>
-      <button class="tab" onclick="profileTab('docs',this)">Documents</button>
-    </div>
+    <div class="tabs" id="profTabs">
+          <button class="tab active" onclick="profileTab('overview',this)">Overview</button>
+          <button class="tab" onclick="profileTab('personal',this)">Personal</button>
+          <button class="tab" onclick="profileTab('employment',this)">Employment</button>
+          <button class="tab" onclick="profileTab('attendance',this)">Attendance</button>
+          <button class="tab" onclick="profileTab('leave',this)">Leave</button>
+          <button class="tab" onclick="profileTab('notes',this)">HR Notes</button>
+          <button class="tab" onclick="profileTab('disciplinary',this)">Disciplinary</button>
+          <button class="tab" onclick="profileTab('docs',this)">Documents</button>
+          <button class="tab" onclick="profileTab('training',this)">Training</button>
+          <button class="tab" onclick="profileTab('history',this)">History</button>
+        </div>
     <div id="profileContent"></div>
   </div>
 </div>
@@ -932,26 +949,57 @@ function chart(cv,inst,type,labels,data,color){
 
 /* ---- EMPLOYEES ---- */
 async function loadEmployees(){
-  const dep=$('.tab.active')?.dataset.state||'';
-  let url='employees';
-  if(dep)url+='&status='+dep;
-  const data=await get(url);
+  const data=await get('employees');
   if(!data)return;
   employeeData=data;
+  // populate dep + position filter dropdowns
+  const deps=[...new Set(data.map(e=>e.dept).filter(Boolean))];
+  $('#empDepFilter').innerHTML='<option value="">Department ▼ (All)</option>'+deps.map(d=>`<option>${esc(d)}</option>`).join('');
+  const poss=[...new Set(data.map(e=>e.position).filter(Boolean))];
+  $('#empPosFilter').innerHTML='<option value="">Position ▼ (All)</option>'+poss.map(p=>`<option>${esc(p)}</option>`).join('');
+  renderEmps(data);
+}
+let empFiltered=[];
+function renderEmps(data){
+  empFiltered=data;
   const body=$('#empBody');
   if(!data.length){$('#empEmpty').classList.remove('hidden');body.innerHTML='';return;}
   $('#empEmpty').classList.add('hidden');
   body.innerHTML=data.map(e=>`<tr>
-    <td><span class="avatar">${esc(e.full_name?.[0]||'?')}</span><b>${esc(e.full_name)}</b><br><small style="color:#8a97ab">${esc(e.employee_code)}</small></td>
+    <td><b>${esc(e.employee_code||e.id)}</b></td>
+    <td><span class="avatar">${esc(e.full_name?.[0]||'?')}</span><b>${esc(e.full_name)}</b></td>
     <td>${esc(e.dept||'-')}</td><td>${esc(e.position||'-')}</td>
     <td><span class="pill ${stt(e.status)}">${esc(e.status)}</span></td>
-    <td>${e.start_date||'-'}</td>
-    <td><div class="row-actions">
+    <td><div class="row-actions" style="flex-wrap:wrap;gap:4px">
       <button title="View" onclick="viewProfile(${e.id})"><i class="fa-regular fa-eye"></i></button>
       <button title="Edit" onclick="openEmp(${e.id})"><i class="fa-regular fa-pen-to-square"></i></button>
-      <button title="Delete" onclick="delEmp(${e.id})"><i class="fa-regular fa-trash-can"></i></button>
+      <button title="Add Note" onclick="empNote(${e.id})"><i class="fa-solid fa-note-sticky"></i></button>
+      <button title="Documents" onclick="viewProfile(${e.id});setTimeout(()=>profileTab('docs'),300)"><i class="fa-solid fa-file-lines"></i></button>
+      <button title="Attendance" onclick="viewProfile(${e.id});setTimeout(()=>profileTab('attendance'),300)"><i class="fa-solid fa-clock"></i></button>
+      <button title="Leave" onclick="viewProfile(${e.id});setTimeout(()=>profileTab('leave'),300)"><i class="fa-solid fa-umbrella-beach"></i></button>
+      <button title="Disciplinary" onclick="viewProfile(${e.id});setTimeout(()=>profileTab('disciplinary'),300)"><i class="fa-solid fa-triangle-exclamation"></i></button>
+      <button title="Print" onclick="printProfile(${e.id})"><i class="fa-solid fa-print"></i></button>
+      <button title="Deactivate" onclick="deactivateEmp(${e.id})"><i class="fa-solid fa-user-slash"></i></button>
     </div></td></tr>`).join('');
 }
+function filterEmps(){
+  const q=($('#empSearch').value||'').toLowerCase();
+  const dep=$('#empDepFilter').value, st=$('#empStatusFilter').value, pos=$('#empPosFilter').value;
+  const res=employeeData.filter(e=>
+    (!q||(e.full_name||'').toLowerCase().includes(q)||(e.employee_code||'').toLowerCase().includes(q))&&
+    (!dep||e.dept===dep)&&(!st||e.status===st)&&(!pos||e.position===pos));
+  renderEmps(res);
+}
+async function empNote(id){
+  showPrompt('Add Note for Employee #'+id,[['Note','note','text'],['Category','category','text']],async v=>{v.employee_id=id;const r=await post('save_note',v);showAlert(r&&r.ok?'Note added.':(r&&r.error||'Error'));});
+}
+async function deactivateEmp(id){
+  if(!confirm('Deactivate this employee?'))return;
+  const r=await get('deactivate_employee','id='+id);
+  showAlert(r&&r.ok?'Employee deactivated.':'Error');
+  loadEmployees();
+}
+function printProfile(id){viewProfile(id);setTimeout(()=>{showModal('profileModal');window.print();},600);}
 function stt(s){return ['Active'].includes(s)?'green':['On Leave'].includes(s)?'blue':['Probation'].includes(s)?'amber':['Suspended','Terminated'].includes(s)?'red':'violet';}
 async function openEmp(id){
   resetEmp();
@@ -1095,12 +1143,49 @@ async function profileTab(tab,btn){
   qs('#profileModal .tab').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');
   let c='';
   if(tab==='overview')c=`<div class="form-grid"><div><label>Phone</label><p>${esc(currentProf.phone||'-')}</p></div><div><label>Email</label><p>${esc(currentProf.email||'-')}</p></div><div><label>DOB</label><p>${currentProf.date_of_birth||'-'}</p></div><div><label>Joined</label><p>${currentProf.start_date||'-'}</p></div><div><label>Type</label><p>${esc(currentProf.employment_type||'-')}</p></div><div><label>Shift</label><p>${esc(currentProf.shift||'-')}</p></div><div class="full"><label>Address</label><p>${esc(currentProf.address||'-')}</p></div></div>`;
+  if(tab==='personal')c=profilePersonal();
+  if(tab==='employment')c=await profileEmployment();
+  if(tab==='attendance')c=await profileAttendance();
   if(tab==='notes')c=await profileNotes();
   if(tab==='disciplinary')c=await profileDisc();
   if(tab==='contracts')c=await profileCont();
   if(tab==='leave')c=await profileLeave();
   if(tab==='docs')c=await profileDocs();
+  if(tab==='training')c=await profileTraining();
+  if(tab==='history')c=await profileHistory();
   $('#profileContent').innerHTML=c;
+}
+function profilePersonal(){
+  const e=currentProf;
+  return `<div class="form-grid"><div><label>Full Name</label><p>${esc(e.full_name||'-')}</p></div><div><label>Gender</label><p>${esc(e.gender||'-')}</p></div><div><label>Date of Birth</label><p>${e.date_of_birth||'-'}</p></div><div><label>Marital Status</label><p>${esc(e.marital_status||'-')}</p></div><div><label>Spouse</label><p>${esc(e.spouse_name||'-')}</p></div><div><label>Spouse Mobile</label><p>${esc(e.spouse_mobile||'-')}</p></div><div><label>Mobile</label><p>${esc(e.phone||'-')}</p></div><div><label>Email</label><p>${esc(e.email||'-')}</p></div><div><label>Nationality</label><p>${esc(e.nationality||'-')}</p></div><div><label>SSNIT No</label><p>${esc(e.ssnit||'-')}</p></div><div><label>Last Education</label><p>${esc(e.last_education||'-')}</p></div><div class="full"><label>Address</label><p>${esc(e.address||'-')}</p></div></div>`;
+}
+async function profileEmployment(){
+  const e=currentProf;
+  let html=`<div class="form-grid"><div><label>Employee Code</label><p>${esc(e.employee_code||'-')}</p></div><div><label>Department</label><p>${esc(e.dept||'-')}</p></div><div><label>Position</label><p>${esc(e.position||'-')}</p></div><div><label>Employment Type</label><p>${esc(e.employment_type||'-')}</p></div><div><label>Start Date</label><p>${e.start_date||'-'}</p></div><div><label>End Date</label><p>${e.end_date||'-'}</p></div><div><label>Work Location</label><p>${esc(e.work_location||'-')}</p></div><div><label>Shift</label><p>${esc(e.shift||'-')}</p></div><div><label>Status</label><p><span class="pill ${stt(e.status)}">${esc(e.status)}</span></p></div><div><label>Bank Acc Name</label><p>${esc(e.bank_account_name||'-')}</p></div><div><label>Bank Name</label><p>${esc(e.bank_name||'-')}</p></div><div><label>Branch</label><p>${esc(e.bank_branch||'-')}</p></div><div><label>Acc Number</label><p>${esc(e.bank_account_number||'-')}</p></div><div><label>MoMo Number</label><p>${esc(e.momo_number||'-')}</p></div><div><label>MoMo Network</label><p>${esc(e.momo_network||'-')}</p></div></div>`;
+  const ctr=await profileCont();
+  return html+`<div style="margin-top:16px"><h3 style="margin-bottom:8px">Contracts</h3>${ctr}</div>`;
+}
+async function profileAttendance(){
+  const d=await get('attendance','employee_id='+currentProf.id);
+  const list=Array.isArray(d)?d:(d&&d.list?d.list:[]);
+  if(!list.length)return '<p style="color:#8a97ab;margin:10px">No attendance records.</p>';
+  return '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Clock In</th><th>Clock Out</th><th>Status</th></tr></thead><tbody>'+list.slice(0,20).map(a=>`<tr><td>${a.work_date||''}</td><td>${a.clock_in||'-'}</td><td>${a.clock_out||'-'}</td><td>${a.status||''}</td></tr>`).join('')+'</tbody></table></div>';
+}
+function profileTraining(){
+  // Training field not in current schema; show placeholder sourced from career data
+  const e=currentProf;
+  const certs=[e.last_education, e.ssnit].filter(Boolean);
+  return `<div class="form-grid">${(certs.length?certs:['-']).map(x=>`<div><label>Training/Cert</label><p>${esc(x)}</p></div>`).join('')}</div><p style="color:#8a97ab;margin-top:10px;font-style:italic">Training history recorded under employee profile documents.</p>`;
+}
+async function profileHistory(){
+  const e=currentProf;
+  const d=await get('contracts','employee_id='+currentProf.id);
+  const ctr=Array.isArray(d)?d:(d&&d.list?d.list:[]);
+  let rows=[];
+  if(e.start_date)rows.push(`<tr><td>Started employment</td><td>${e.start_date}</td></tr>`);
+  ctr.forEach(c=>{if(c.start_date)rows.push(`<tr><td>Contract (${esc(c.contract_type||'')}) started</td><td>${c.start_date}</td></tr>`);if(c.end_date)rows.push(`<tr><td>Contract ended / renewed</td><td>${c.end_date}</td></tr>`);});
+  if(e.status)rows.push(`<tr><td>Current status: ${esc(e.status)}</td><td>${e.updated_at||'-'}</td></tr>`);
+  return rows.length?`<div class="table-wrap"><table><thead><tr><th>Event</th><th>Date</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:'<p style="color:#8a97ab;margin:10px">No history recorded.</p>';
 }
 async function profileNotes(){
   const d=await get('notes','employee_id='+currentProf.id);

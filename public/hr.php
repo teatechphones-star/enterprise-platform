@@ -1018,7 +1018,7 @@ async function loadSelects(){
   const pos=await get('positions');
   posData=pos;
   $('#e_dept').innerHTML='<option value="">Select</option>'+deptData.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
-  $('#e_pos').innerHTML='<option value="">Select</option>'+pos.map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('');
+  $('#e_pos').innerHTML='<option value="">Select</option>'+(pos&&pos.list?pos.list:[]).map(p=>`<option value="${p.id}">${esc(p.title)}</option>`).join('');
   $('#e_sup').innerHTML='<option value="">Select</option>'+sup.map(s=>`<option value="${s.id}">${esc(s.full_name)}</option>`).join('');
 }
 function resetEmp(){$('#empForm').reset();$('#empForm').elements.id.value='';empStep(1,$('#empTabs .tab'));}

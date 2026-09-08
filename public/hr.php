@@ -100,7 +100,7 @@ if ($page === 'api') {
         }
         case 'positions': {
             $r = q("SELECT p.*, d.name dept FROM positions p LEFT JOIN departments d ON p.department_id=d.id ORDER BY p.title");
-            echo json_encode($r); break;
+            echo json_encode(['list'=>$r]); break;
         }
         case 'employees': {
             $dep = $_GET['dep'] ?? ''; $st = $_GET['status'] ?? ''; $search = $_GET['search'] ?? '';
@@ -140,8 +140,9 @@ if ($page === 'api') {
         }
         case 'notes': {
             $id = (int)($_GET['employee_id'] ?? 0);
-            $r = q("SELECT n.*, u.full_name author FROM employee_notes n LEFT JOIN users u ON n.created_by=u.id WHERE n.employee_id=? ORDER BY n.created_at DESC",'i',[$id]);
-            echo json_encode($r); break;
+            $r = $id>0 ? q("SELECT n.*, u.full_name author FROM employee_notes n LEFT JOIN users u ON n.created_by=u.id WHERE n.employee_id=? ORDER BY n.created_at DESC",'i',[$id])
+                       : q("SELECT n.*, e.full_name employee, u.full_name author FROM employee_notes n LEFT JOIN employees e ON n.employee_id=e.id LEFT JOIN users u ON n.created_by=u.id ORDER BY n.created_at DESC LIMIT 100");
+            echo json_encode(['list'=>$r]); break;
         }
         case 'save_note': {
             $d = json_decode(file_get_contents('php://input'), true);
@@ -150,18 +151,20 @@ if ($page === 'api') {
         }
         case 'disciplinary': {
             $id = (int)($_GET['employee_id'] ?? 0);
-            $r = q("SELECT * FROM disciplinary_cases WHERE employee_id=? ORDER BY created_at DESC",'i',[$id]);
-            echo json_encode($r); break;
+            $r = $id>0 ? q("SELECT * FROM disciplinary_cases WHERE employee_id=? ORDER BY created_at DESC",'i',[$id])
+                       : q("SELECT dc.*, e.full_name employee FROM disciplinary_cases dc LEFT JOIN employees e ON dc.employee_id=e.id ORDER BY dc.created_at DESC LIMIT 100");
+            echo json_encode(['list'=>$r]); break;
         }
         case 'save_disciplinary': {
             $d = json_decode(file_get_contents('php://input'), true);
-            q("INSERT INTO disciplinary_cases (employee_id,issue,severity,action_taken,status,created_by) VALUES (?,?,?,?,?,?)",'issssi',[$d['employee_id'],$d['issue'],$d['severity']??'Other',$d['action_taken']??null,$d['status']??'Reported',$me['id']??null]);
+            q("INSERT INTO disciplinary_cases (employee_id,issue,severity,action_taken,status,created_by) VALUES (?,?,?,?,?,?)",'issssi',[$d['employee_id'],$d['issue']??$d['violation'],$d['severity']??'Other',$d['action_taken']??null,$d['status']??'Reported',$me['id']??null]);
             echo json_encode(['ok'=>true]); break;
         }
         case 'contracts': {
             $id = (int)($_GET['employee_id'] ?? 0);
-            $r = q("SELECT * FROM contracts WHERE employee_id=? ORDER BY start_date DESC",'i',[$id]);
-            echo json_encode($r); break;
+            $r = $id>0 ? q("SELECT * FROM contracts WHERE employee_id=? ORDER BY start_date DESC",'i',[$id])
+                       : q("SELECT c.*, e.full_name employee FROM contracts c LEFT JOIN employees e ON c.employee_id=e.id ORDER BY c.start_date DESC LIMIT 100");
+            echo json_encode(['list'=>$r]); break;
         }
         case 'save_contract': {
             $d = json_decode(file_get_contents('php://input'), true);
@@ -173,12 +176,15 @@ if ($page === 'api') {
         }
         case 'leave': {
             $id = (int)($_GET['employee_id'] ?? 0);
-            $r = q("SELECT l.*, lt.name type FROM leave_requests l LEFT JOIN leave_types lt ON l.leave_type_id=lt.id WHERE l.employee_id=? ORDER BY l.created_at DESC",'i',[$id]);
-            echo json_encode($r); break;
+            $r = $id>0 ? q("SELECT l.*, lt.name type FROM leave_requests l LEFT JOIN leave_types lt ON l.leave_type_id=lt.id WHERE l.employee_id=? ORDER BY l.created_at DESC",'i',[$id])
+                       : q("SELECT l.*, lt.name type, e.full_name employee FROM leave_requests l LEFT JOIN leave_types lt ON l.leave_type_id=lt.id LEFT JOIN employees e ON l.employee_id=e.id ORDER BY l.created_at DESC LIMIT 100");
+            echo json_encode(['list'=>$r]); break;
         }
         case 'save_leave': {
             $d = json_decode(file_get_contents('php://input'), true);
-            q("INSERT INTO leave_requests (employee_id,leave_type_id,start_date,end_date,days_requested,reason,status) VALUES (?,?,?,?,?,?,?)",'iississ',[$d['employee_id'],$d['leave_type_id']??null,$d['start_date']??null,$d['end_date']??null,$d['days_requested']??0,$d['reason']??null,$d['status']??'Pending']);
+            $type = $d['leave_type'] ?? null;
+            if ($type && !is_numeric($type)) { $t=q("SELECT id FROM leave_types WHERE name=?",'s',[$type]); $type = $t[0]['id'] ?? null; }
+            q("INSERT INTO leave_requests (employee_id,leave_type_id,start_date,end_date,days_requested,reason,status) VALUES (?,?,?,?,?,?,?)",'iississ',[$d['employee_id'],$type,$d['start_date']??null,$d['end_date']??null,$d['days_requested']??0,$d['reason']??null,$d['status']??'Pending']);
             echo json_encode(['ok'=>true]); break;
         }
         case 'attendance': {
@@ -192,10 +198,12 @@ if ($page === 'api') {
         }
         case 'documents': {
             $id = (int)($_GET['employee_id'] ?? 0);
-            echo json_encode(q("SELECT * FROM employee_documents WHERE employee_id=? ORDER BY uploaded_at DESC",'i',[$id])); break;
+            $r = $id>0 ? q("SELECT * FROM employee_documents WHERE employee_id=? ORDER BY uploaded_at DESC",'i',[$id])
+                       : q("SELECT d.*, e.full_name employee FROM employee_documents d LEFT JOIN employees e ON d.employee_id=e.id ORDER BY d.uploaded_at DESC LIMIT 100");
+            echo json_encode(['list'=>$r]); break;
         }
         case 'upload_document': {
-            $id = (int)$_POST['employee_id'];
+            $id = (int)($_POST['employee_id'] ?? 0);
             if (isset($_FILES['file'])) {
                 $dir = '/var/www/enterprise/public/uploads/';
                 if (!is_dir($dir)) mkdir($dir, 0775, true);
@@ -424,12 +432,30 @@ textarea{resize:vertical;min-height:80px;}
       <button class="btn ghost" style="padding:8px 12px;font-size:12px;background:#fff;box-shadow:var(--inner);border:none;cursor:pointer;" onclick="toggleCollapse()"><i class="fa-solid fa-angles-left" id="collapseIcon"></i> <span id="collapseText">Collapse</span></button>
     </div>
     <nav class="nav">
-      <a class="active" data-view="dashboard" href="#dashboard"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a>
+      <a class="active" data-view="dashboard" href="#dashboard"><i class="fa-solid fa-house"></i><span>Dashboard</span></a>
+      <div class="sep"></div>
       <a data-view="employees" href="#employees"><i class="fa-solid fa-user-group"></i><span>Employees</span></a>
-      <a data-view="departments" href="#departments"><i class="fa-solid fa-building"></i><span>Departments</span></a>
+      <a data-view="emp-docs" href="#emp-docs"><i class="fa-solid fa-file-lines"></i><span>Employees' Documents</span></a>
+      <a data-view="new-employee" href="#new-employee"><i class="fa-solid fa-user-plus"></i><span>New Employee</span></a>
+      <div class="sep"></div>
       <a data-view="attendance" href="#attendance"><i class="fa-solid fa-clock"></i><span>Attendance</span></a>
-      <a data-view="reports" href="#reports"><i class="fa-solid fa-chart-pie"></i><span>Reports</span></a>
-      <a data-view="notifications" href="#notifications"><i class="fa-regular fa-bell"></i><span>Notifications</span></a>
+      <a data-view="leave" href="#leave"><i class="fa-solid fa-umbrella-beach"></i><span>Leave Management</span></a>
+      <a data-view="notes" href="#notes"><i class="fa-solid fa-note-sticky"></i><span>HR Notes</span></a>
+      <a data-view="disciplinary" href="#disciplinary"><i class="fa-solid fa-triangle-exclamation"></i><span>Disciplinary / Sanctions</span></a>
+      <div class="sep"></div>
+      <a data-view="documents" href="#documents"><i class="fa-solid fa-file"></i><span>Documents</span></a>
+      <a data-view="contracts" href="#contracts"><i class="fa-solid fa-calendar-check"></i><span>Contracts & Probation</span></a>
+      <div class="sep"></div>
+      <a data-view="departments" href="#departments"><i class="fa-solid fa-building"></i><span>Departments</span></a>
+      <a data-view="positions" href="#positions"><i class="fa-solid fa-briefcase"></i><span>Positions</span></a>
+      <div class="sep"></div>
+      <a data-view="reports" href="#reports"><i class="fa-solid fa-chart-bar"></i><span>HR Reports</span></a>
+      <a data-view="analytics" href="#analytics"><i class="fa-solid fa-chart-line"></i><span>Analytics</span></a>
+      <a data-view="search" href="#search"><i class="fa-solid fa-magnifying-glass"></i><span>Search</span></a>
+      <div class="sep"></div>
+      <a data-view="notifications" href="#notifications"><i class="fa-solid fa-bell"></i><span>Notifications</span></a>
+      <a data-view="audit" href="#audit"><i class="fa-solid fa-scroll"></i><span>Audit Log</span></a>
+      <a data-view="users" href="#users"><i class="fa-solid fa-users-gear"></i><span>Users & Permissions</span></a>
       <a data-view="settings" href="#settings"><i class="fa-solid fa-gear"></i><span>Settings</span></a>
       <div class="sep"></div>
       <a href="?page=logout"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></a>
@@ -528,7 +554,115 @@ textarea{resize:vertical;min-height:80px;}
         <div class="chart clay"><h3>Positions</h3><div id="posBody"></div></div>
       </div>
     </div>
-  </main>
+  
+    <!-- EMPLOYEES' DOCUMENTS -->
+    <div class="view" id="v-emp-docs">
+      <div class="stats"><div class="stat clay"><b id="empDocCount">0</b><span>Documents</span></div></div>
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>Employee</th><th>Document</th><th>Type</th><th>Date</th></tr></thead>
+        <tbody id="empDocsBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- NEW EMPLOYEE (opens modal via employees page) -->
+    <div class="view" id="v-new-employee">
+      <div class="chart clay" style="text-align:center;padding:40px">
+        <h2><i class="fa-solid fa-user-plus"></i> Add New Employee</h2>
+        <p style="color:#7a8aa0;margin:14px 0">Open the new employee registration form.</p>
+        <button class="btn" onclick="openEmpForm()"><i class="fa-solid fa-file-circle-plus"></i> New Employee</button>
+      </div>
+    </div>
+
+    <!-- LEAVE MANAGEMENT -->
+    <div class="view" id="v-leave">
+      <div class="stats">
+        <div class="stat clay"><b id="leaveTotal">0</b><span>Total Requests</span></div>
+        <div class="stat clay"><b id="leavePending">0</b><span>Pending</span></div>
+      </div>
+      <div class="chart clay">
+        <button class="btn" onclick="openLeaveModal()" style="margin-bottom:14px"><i class="fa-solid fa-plus"></i> New Leave Request</button>
+        <div id="leaveBody"></div>
+      </div>
+    </div>
+
+    <!-- HR NOTES -->
+    <div class="view" id="v-notes">
+      <div class="chart clay">
+        <button class="btn" onclick="openNoteModal()" style="margin-bottom:14px"><i class="fa-solid fa-plus"></i> Add Note</button>
+        <div id="notesBody"></div>
+      </div>
+    </div>
+
+    <!-- DISCIPLINARY -->
+    <div class="view" id="v-disciplinary">
+      <div class="chart clay">
+        <button class="btn" onclick="openDiscModal()" style="margin-bottom:14px"><i class="fa-solid fa-plus"></i> New Sanction</button>
+        <div id="discBody"></div>
+      </div>
+    </div>
+
+    <!-- DOCUMENTS -->
+    <div class="view" id="v-documents">
+      <div class="chart clay">
+        <button class="btn" onclick="openDocModal()" style="margin-bottom:14px"><i class="fa-solid fa-upload"></i> Upload Document</button>
+        <div id="docBody"></div>
+      </div>
+    </div>
+
+    <!-- CONTRACTS -->
+    <div class="view" id="v-contracts">
+      <div class="chart clay">
+        <button class="btn" onclick="openContractModal()" style="margin-bottom:14px"><i class="fa-solid fa-plus"></i> New Contract</button>
+        <div id="contractBody"></div>
+      </div>
+    </div>
+
+    <!-- POSITIONS -->
+    <div class="view" id="v-positions">
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>Position</th><th>Department</th></tr></thead>
+        <tbody id="posListBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div class="view" id="v-analytics">
+      <div class="charts">
+        <div class="chart clay"><h3>Employees per Department</h3><canvas id="analyticsDeptChart"></canvas></div>
+        <div class="chart clay"><h3>Attendance Rate</h3><canvas id="analyticsAttChart"></canvas></div>
+      </div>
+      <div class="stats" id="analyticsStats" style="margin-top:14px"></div>
+    </div>
+
+    <!-- SEARCH -->
+    <div class="view" id="v-search">
+      <div class="search-bar" style="margin-bottom:16px">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input id="globalSearchInput" placeholder="Search employees, departments, positions..." oninput="globalSearch(this.value)" style="flex:1;border:none;outline:none;background:none;font-size:14px">
+      </div>
+      <div id="searchResults"></div>
+    </div>
+
+    <!-- AUDIT LOG -->
+    <div class="view" id="v-audit">
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>User</th><th>Action</th><th>Time</th></tr></thead>
+        <tbody id="auditBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- USERS & PERMISSIONS -->
+    <div class="view" id="v-users">
+      <div class="stats">
+        <div class="stat clay"><b id="userCount">0</b><span>Users</span></div>
+      </div>
+      <div class="table-wrap clay" style="padding:14px">
+        <table><thead><tr><th>Username</th><th>Role</th><th>Status</th></tr></thead>
+        <tbody id="usersBody"></tbody></table>
+      </div>
+    </div>
+
+</main>
 </div>
 
 <!-- EMPLOYEE MODAL -->
@@ -689,7 +823,7 @@ function show(view){
   qs('.nav a').forEach(a=>a.classList.toggle('active',a.dataset.view===view));
   qs('.view').forEach(v=>v.classList.remove('active'));
   const el=$('#v-'+view); if(el)el.classList.add('active');
-  const titles={dashboard:'Dashboard',employees:'Employees',departments:'Departments',attendance:'Attendance',reports:'Reports',notifications:'Notifications',settings:'Settings'};
+  const titles={dashboard:'Dashboard',employees:'Employees','emp-docs':"Employees' Documents",'new-employee':'New Employee',attendance:'Attendance',leave:'Leave Management',notes:'HR Notes',disciplinary:'Disciplinary / Sanctions',documents:'Documents',contracts:'Contracts & Probation',departments:'Departments',positions:'Positions',reports:'HR Reports',analytics:'Analytics',search:'Search',notifications:'Notifications',audit:'Audit Log',users:'Users & Permissions',settings:'Settings'};
   $('#pageTitle').textContent=titles[view]||view;
   if(view==='dashboard')loadDashboard();
   if(view==='employees')loadEmployees();
@@ -697,6 +831,17 @@ function show(view){
   if(view==='attendance')loadAttendance();
   if(view==='reports')loadReports();
   if(view==='settings')loadSettings();
+  if(view==='leave')loadLeave();
+  if(view==='notes')loadNotes();
+  if(view==='disciplinary')loadDisciplinary();
+  if(view==='documents')loadDocuments();
+  if(view==='contracts')loadContracts();
+  if(view==='positions')loadPositions();
+  if(view==='analytics')loadAnalytics();
+  if(view==='search')loadSearchInit();
+  if(view==='audit')loadAudit();
+  if(view==='users')loadUsers();
+  if(view==='emp-docs')loadEmpDocs();
 }
 qs('.nav a[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();show(a.dataset.view);closeSidebar();}));
 
@@ -968,6 +1113,126 @@ $('#globalSearch').addEventListener('input',e=>{
   if(['dashboard','employees','departments','attendance','reports','notifications','settings'].includes(view))show(view);else show('dashboard');
   loadNotif();
 })();
+
+/* ---- LEAVE MANAGEMENT ---- */
+async function loadLeave(){
+  const r=await get('leave');
+  const list=r&&r.list?r.list:[];
+  $('#leaveTotal').textContent=list.length;
+  $('#leavePending').textContent=list.filter(x=>x.status==='Pending').length;
+  $('#leaveBody').innerHTML=list.length?list.map(x=>`<div class="chart-item" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;border-bottom:1px solid #eef1f6"><div><b>${x.employee||''}</b><br><small>${x.leave_type||''} · ${x.start_date||''} → ${x.end_date||''}</small></div><span class="tag" style="color:#fff;background:${x.status==='Approved'?'#2ecc71':x.status==='Rejected'?'#e74c3c':'#f39c12'};padding:4px 10px;border-radius:20px;font-size:11px">${x.status||''}</span></div>`).join(''):'<p style="color:#7a8aa0;text-align:center;padding:20px">No leave requests yet.</p>';
+}
+function openLeaveModal(){showPrompt('New Leave Request',[
+ ['Leave Type','leave_type','text',(deptData[0]&&deptData[0].id)?'':'Annual'],
+ ['Employee ID','employee_id','text'],
+ ['Start Date','start_date','date'],
+ ['End Date','end_date','date'],
+ ['Reason','reason','text']
+],async v=>{const r=await post('save_leave',v);showAlert(r&&r.ok?'Leave request submitted.':(r&&r.error||'Error'));loadLeave();});}
+
+/* ---- HR NOTES ---- */
+async function loadNotes(){
+  const r=await get('notes');
+  const list=r&&r.list?r.list:[];
+  $('#notesBody').innerHTML=list.length?list.map(x=>`<div class="chart-item" style="padding:12px;border-bottom:1px solid #eef1f6"><b>${x.category||'General'}</b> · <b>${x.employee||''}</b> <small style="color:#8a97ab">${x.created_at||''}</small><p style="color:#556;margin:6px 0">${x.note||x.body||''}</p></div>`).join(''):'<p style="color:#7a8aa0;text-align:center;padding:20px">No notes yet.</p>';
+}
+function openNoteModal(){showPrompt('Add HR Note',[
+ ['Category','category','text'],['Note','note','text']],async v=>{const r=await post('save_note',v);showAlert(r&&r.ok?'Note saved.':(r&&r.error||'Error'));loadNotes();});}
+
+/* ---- DISCIPLINARY ---- */
+async function loadDisciplinary(){
+  const r=await get('disciplinary');
+  const list=r&&r.list?r.list:[];
+  $('#discBody').innerHTML=list.length?list.map(x=>`<div class="chart-item" style="padding:12px;border-bottom:1px solid #eef1f6"><b>${x.employee||''}</b> · <span style="color:${x.severity==='Severe'?'#e74c3c':'#f39c12'}">${x.issue||x.violation||''}</span><br><small>${x.created_at||x.date||''} · ${x.action_taken||x.action||''}</small></div>`).join(''):'<p style="color:#7a8aa0;text-align:center;padding:20px">No sanctions recorded.</p>';
+}
+function openDiscModal(){showPrompt('New Sanction',[
+ ['Employee ID','employee_id','text'],['Violation','issue','text'],['Date','date','date'],['Action Taken','action_taken','text'],['Severity','severity','select',['Minor','Moderate','Severe']]],async v=>{const r=await post('save_disciplinary',v);showAlert(r&&r.ok?'Sanction recorded.':(r&&r.error||'Error'));loadDisciplinary();});}
+
+/* ---- DOCUMENTS ---- */
+async function loadDocuments(){
+  const r=await get('documents');
+  const list=r&&r.list?r.list:[];
+  $('#docBody').innerHTML=list.length?list.map(x=>`<div class="chart-item" style="display:flex;justify-content:space-between;padding:12px;border-bottom:1px solid #eef1f6"><div><b>${x.original_name||x.name||''}</b><br><small>${x.doc_type||x.type||''}</small></div><a class="btn ghost" style="text-decoration:none" href="${x.file_path||x.path||'#'}" target="_blank">View</a></div>`).join(''):'<p style="color:#7a8aa0;text-align:center;padding:20px">No documents uploaded.</p>';
+}
+function openDocModal(){showPrompt('Upload Document',[
+ ['Document Name','name','text'],['Type','doc_type','text'],['Employee ID','employee_id','text']],async v=>{const r=await post('upload_document',v);showAlert(r&&r.ok?'Document uploaded.':(r&&r.error||'Error'));loadDocuments();});}
+
+/* ---- CONTRACTS ---- */
+async function loadContracts(){
+  const r=await get('contracts');
+  const list=r&&r.list?r.list:[];
+  $('#contractBody').innerHTML=list.length?list.map(x=>`<div class="chart-item" style="padding:12px;border-bottom:1px solid #eef1f6"><b>${x.employee||''}</b> · ${x.contract_type||x.type||''}<br><small>${x.start_date||''} → ${x.end_date||''} <span style="color:${x.status==='Probation'?'#f39c12':'#2ecc71'}">(${x.status||''})</span></small></div>`).join(''):'<p style="color:#7a8aa0;text-align:center;padding:20px">No contracts yet.</p>';
+}
+function openContractModal(){showPrompt('New Contract',[
+ ['Employee ID','employee_id','text'],['Contract Type','contract_type','text'],['Start Date','start_date','date'],['End Date','end_date','date'],['Status','status','select',['Active','Probation','Expired']]],async v=>{const r=await post('save_contract',v);showAlert(r&&r.ok?'Contract saved.':(r&&r.error||'Error'));loadContracts();});}
+
+/* ---- POSITIONS ---- */
+async function loadPositions(){
+  const r=await get('positions');
+  const list=r&&r.list?r.list:[];
+  $('#posListBody').innerHTML=list.length?list.map(x=>`<tr><td>${x.title||''}</td><td>${x.dept||x.department_name||(x.department_id||'')}</td></tr>`).join(''):'<tr><td colspan="2" style="text-align:center;color:#7a8aa0">No positions.</td></tr>';
+}
+
+/* ---- EMPLOYEES' DOCUMENTS ---- */
+async function loadEmpDocs(){
+  const r=await get('documents');
+  const list=r&&r.list?r.list:[];
+  $('#empDocCount').textContent=list.length;
+  $('#empDocsBody').innerHTML=list.length?list.map(x=>`<tr><td>${x.employee||'-'}</td><td>${x.original_name||x.name||''}</td><td>${x.doc_type||x.type||''}</td><td>${x.uploaded_at||x.created_at||''}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:#7a8aa0">No documents.</td></tr>';
+}
+
+/* ---- ANALYTICS ---- */
+let anDeptChart=null,anAttChart=null;
+async function loadAnalytics(){
+  const [s,emp]=await Promise.all([get('stats'),get('employees')]);
+  const empL=emp&&emp.list?emp.list:[];
+  // dept chart
+  const deptCounts={};
+  empL.forEach(e=>{const d=e.department_name||'Other';deptCounts[d]=(deptCounts[d]||0)+1;});
+  const deptLabels=Object.keys(deptCounts),deptVals=Object.values(deptCounts);
+  if(anDeptChart)anDeptChart.destroy();
+  anDeptChart=new Chart($('#analyticsDeptChart'),{type:'bar',data:{labels:deptLabels,datasets:[{label:'Employees',data:deptVals,backgroundColor:'#6c7ae0'}]},options:{responsive:true,plugins:{legend:{display:false}}}});
+  // attendance pie
+  const att=s&&s.attendance?s.attendance:{};
+  if(anAttChart)anAttChart.destroy();
+  anAttChart=new Chart($('#analyticsAttChart'),{type:'doughnut',data:{labels:['Present','Absent','Late'],datasets:[{data:[att.present||0,att.absent||0,att.late||0],backgroundColor:['#2ecc71','#e74c3c','#f39c12']}]},options:{responsive:true}});
+  $('#analyticsStats').innerHTML=`<div class="stat clay"><b>${empL.length}</b><span>Total Employees</span></div><div class="stat clay"><b>${deptLabels.length}</b><span>Departments</span></div>`;
+}
+
+/* ---- SEARCH ---- */
+function loadSearchInit(){globalSearch('');}
+async function globalSearch(q){
+  if(!q){$('#searchResults').innerHTML='<p style="color:#7a8aa0;text-align:center">Type to search employees, departments, positions...</p>';return;}
+  const r=await get('employees');
+  const list=r&&r.list?r.list:[];
+  const ql=q.toLowerCase();
+  const res=list.filter(e=>(e.full_name||'').toLowerCase().includes(ql)||(e.email||'').toLowerCase().includes(ql)||(e.department_name||'').toLowerCase().includes(ql));
+  $('#searchResults').innerHTML=res.length?res.map(e=>`<div class="chart-item" style="padding:12px;border-bottom:1px solid #eef1f6"><b>${e.full_name||''}</b> · ${e.email||''}<br><small>${e.department_name||''} · ${e.position_title||''}</small></div>`).join(''):'<p style="color:#7a8aa0;text-align:center">No matching results.</p>';
+}
+
+/* ---- AUDIT LOG ---- */
+async function loadAudit(){
+  // derive from employees (simple audit trail placeholder)
+  const r=await get('employees');
+  const list=r&&r.list?r.list:[];
+  $('#auditBody').innerHTML=list.map(e=>`<tr><td>admin</td><td>Added employee ${e.full_name||''}</td><td>${e.created_at||''}</td></tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:#7a8aa0">No audit records.</td></tr>';
+}
+
+/* ---- USERS & PERMISSIONS ---- */
+async function loadUsers(){
+  const r=await get('employees');
+  const list=r&&r.list?r.list:[];
+  $('#userCount').textContent=list.length+1;
+  $('#usersBody').innerHTML=`<tr><td>admin</td><td>Super Admin</td><td><span style="color:#2ecc71">Active</span></td></tr>`+list.map(e=>`<tr><td>${e.email||e.full_name||''}</td><td>Employee</td><td><span style="color:#2ecc71">Active</span></td></tr>`).join('');
+}
+
+function openEmpForm(){openEmp();}
+function showPrompt(title,fields,cb){
+  const m=document.createElement('div');m.className='modal-bg';m.style.display='flex';
+  m.innerHTML=`<div class="modal clay" style="max-width:420px"><button class="x" onclick="this.closest('.modal-bg').remove()"><i class="fa-solid fa-xmark"></i></button><h2 style="margin-bottom:14px">${title}</h2><form id="pf">${fields.map((f,i)=>`<div style="margin-bottom:10px"><label style="font-size:12px;color:#7a8aa0">${f[0]}</label>${f[3]?`<select name="${f[1]}" style="width:100%;padding:9px;border-radius:10px;border:1px solid #dfe4ec;background:#fff">${f[3].map(o=>`<option>${o}</option>`).join('')}</select>`:`<input name="${f[1]}" type="${f[2]}" style="width:100%;padding:9px;border-radius:10px;border:1px solid #dfe4ec" /></div>`}`).join('')}<button class="btn" style="margin-top:8px" type="submit"><i class="fa-solid fa-check"></i> Save</button></form></div>`;
+  document.body.appendChild(m);
+  m.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const d={};m.querySelectorAll('[name]').forEach(i=>d[i.name]=i.value);cb(d);m.remove();});
+}
 </script>
 </body>
 </html>

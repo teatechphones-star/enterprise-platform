@@ -373,7 +373,38 @@ textarea{resize:vertical;min-height:80px;}
 .login-card input{text-align:center;}
 .alert{position:fixed;top:24px;right:24px;z-index:99;padding:14px 22px;border-radius:16px;color:#fff;font-weight:700;box-shadow:var(--shadow);display:none;}
 .alert.show{display:block;animation:fade .3s;}
-@media(max-width:1000px){.charts{grid-template-columns:1fr}.side{display:none}.side.open{display:flex;position:fixed;z-index:60;height:100%;}}
+/* media queries - responsive */
+.menu-toggle{display:none;width:44px;height:44px;border:none;border-radius:14px;background:#fff;box-shadow:var(--inner);color:#5b6b80;font-size:18px;cursor:pointer;align-items:center;justify-content:center;}
+@media(max-width:1000px){
+  .charts{grid-template-columns:1fr}
+  .stats{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+  .form-grid{grid-template-columns:1fr}
+  .menu-toggle{display:flex}
+  .app{flex-direction:column}
+  .main{padding:16px;height:auto;min-height:100vh}
+  .top{flex-wrap:wrap;gap:10px}
+  .top h1{font-size:20px}
+  .search-bar{width:100%;order:3}
+  .actions{width:100%;justify-content:space-between}
+  .side{position:fixed;left:-270px;top:0;bottom:0;width:260px;height:100vh;z-index:70;transition:left .3s ease;box-shadow:10px 0 30px rgba(0,0,0,.15)}
+  .side.open{left:0}
+  .side.open + .backdrop{display:block}
+  .backdrop{display:none;position:fixed;inset:0;background:rgba(40,50,70,.45);z-index:65}
+  .modal{max-width:95vw;padding:18px}
+  .empTabs{flex-wrap:wrap}
+  .chart,.stat{padding:16px}
+  th,td{padding:10px 8px;font-size:12px}
+  .row-actions button{width:28px;height:28px}
+  .avatar{width:28px;height:28px;font-size:11px;margin-right:6px}
+}
+/* PC-side collapse option */
+.side.collapsed{width:76px}
+.side.collapsed .logo b,.side.collapsed .logo small,.side.collapsed .nav a span,.side.collapsed .usr b,.side.collapsed .usr small{display:none}
+.side.collapsed .nav a{justify-content:center;padding:14px}
+.side.collapsed .nav a i{font-size:20px;margin:0}
+.side.collapsed .usr{justify-content:center}
+.side.collapsed .usr .av{margin:0}
+.side.collapsed .sep{display:none}
 </style>
 </head>
 <body>
@@ -387,17 +418,21 @@ textarea{resize:vertical;min-height:80px;}
     <div class="logo">
       <div class="ic"><i class="fa-solid fa-users"></i></div>
       <div><b>INDO HR</b><small>Management System</small></div>
+      <button class="menu-toggle" style="margin-left:auto;background:none;box-shadow:none;color:#5b6b80;font-size:16px" onclick="closeSidebar()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+      <button class="btn ghost" style="padding:8px 12px;font-size:12px;background:#fff;box-shadow:var(--inner);border:none;cursor:pointer;" onclick="toggleCollapse()"><i class="fa-solid fa-angles-left" id="collapseIcon"></i> <span id="collapseText">Collapse</span></button>
     </div>
     <nav class="nav">
-      <a class="active" data-view="dashboard" href="#dashboard"><i class="fa-solid fa-gauge-high"></i>Dashboard</a>
-      <a data-view="employees" href="#employees"><i class="fa-solid fa-user-group"></i>Employees</a>
-      <a data-view="departments" href="#departments"><i class="fa-solid fa-building"></i>Departments</a>
-      <a data-view="attendance" href="#attendance"><i class="fa-solid fa-clock"></i>Attendance</a>
-      <a data-view="reports" href="#reports"><i class="fa-solid fa-chart-pie"></i>Reports</a>
-      <a data-view="notifications" href="#notifications"><i class="fa-regular fa-bell"></i>Notifications</a>
-      <a data-view="settings" href="#settings"><i class="fa-solid fa-gear"></i>Settings</a>
+      <a class="active" data-view="dashboard" href="#dashboard"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></a>
+      <a data-view="employees" href="#employees"><i class="fa-solid fa-user-group"></i><span>Employees</span></a>
+      <a data-view="departments" href="#departments"><i class="fa-solid fa-building"></i><span>Departments</span></a>
+      <a data-view="attendance" href="#attendance"><i class="fa-solid fa-clock"></i><span>Attendance</span></a>
+      <a data-view="reports" href="#reports"><i class="fa-solid fa-chart-pie"></i><span>Reports</span></a>
+      <a data-view="notifications" href="#notifications"><i class="fa-regular fa-bell"></i><span>Notifications</span></a>
+      <a data-view="settings" href="#settings"><i class="fa-solid fa-gear"></i><span>Settings</span></a>
       <div class="sep"></div>
-      <a href="?page=logout"><i class="fa-solid fa-right-from-bracket"></i>Logout</a>
+      <a href="?page=logout"><i class="fa-solid fa-right-from-bracket"></i><span>Logout</span></a>
     </nav>
     <div class="usr">
       <div class="av"><?= strtoupper(substr($user['full_name'] ?? 'H',0,1)) ?></div>
@@ -405,10 +440,16 @@ textarea{resize:vertical;min-height:80px;}
     </div>
   </aside>
 
+  <!-- MOBILE BACKDROP -->
+  <div class="backdrop" id="backdrop" onclick="closeSidebar()"></div>
+
   <!-- MAIN -->
   <main class="main">
     <div class="top">
-      <h1 id="pageTitle">Dashboard</h1>
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="menu-toggle" onclick="openSidebar()"><i class="fa-solid fa-bars"></i></button>
+        <h1 id="pageTitle">Dashboard</h1>
+      </div>
       <div class="actions">
         <div class="search-bar" id="globalSearchWrap">
           <i class="fa-solid fa-magnifying-glass" style="color:#8a97ab"></i>
@@ -657,7 +698,22 @@ function show(view){
   if(view==='reports')loadReports();
   if(view==='settings')loadSettings();
 }
-qs('.nav a[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();show(a.dataset.view);}));
+qs('.nav a[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();show(a.dataset.view);closeSidebar();}));
+
+/* ---- SIDEBAR TOGGLE ---- */
+function openSidebar(){document.getElementById('side').classList.add('open');}
+function closeSidebar(){document.getElementById('side').classList.remove('open');}
+function toggleCollapse(){
+  const side=document.getElementById('side');
+  const onMobile=window.innerWidth<=1000;
+  if(onMobile){side.classList.toggle('open');center();return;}
+  side.classList.toggle('collapsed');
+  const icon=document.getElementById('collapseIcon');
+  const txt=document.getElementById('collapseText');
+  if(side.classList.contains('collapsed')){icon.className='fa-solid fa-angles-right';txt.textContent='Expand';}
+  else{icon.className='fa-solid fa-angles-left';txt.textContent='Collapse';}
+}
+function center(){}
 
 /* ---- DASHBOARD ---- */
 let weekChart,deptChart,attChart;

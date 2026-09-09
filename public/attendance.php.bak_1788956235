@@ -282,126 +282,15 @@ if ($page === 'api') {
             echo json_encode(['ok'=>true,'daily'=>$rows,'depts'=>$depts,'rate'=>$rate]); break;
 
         case 'reports':
-                    $from=$_GET['from']??date('Y-m-01'); $to=$_GET['to']??date('Y-m-d');
-                    $r = q("SELECT e.full_name,e.employee_code,d.name dept,
-                        COUNT(DISTINCT a.work_date) days_present,
-                        SUM(a.status='Late') late_days,
-                        SUM(a.overtime_minutes) overtime_min
-                        FROM employees e LEFT JOIN departments d ON d.id=e.department_id
-                        LEFT JOIN attendance_records a ON a.employee_id=e.id AND a.work_date BETWEEN ? AND ?
-                        WHERE e.status!='Deactivated' GROUP BY e.id ORDER BY e.full_name",'ss',[$from,$to]);
-                    echo json_encode(['ok'=>true,'list'=>$r]); break;
-
-                /* ---------- PUNCH LOG: day / week / month grouping + late/early by shift+dept ---------- */
-                case 'punch_log':
-                    $group = $_GET['group'] ?? 'day';
-                    $date  = $_GET['date'] ?? date('Y-m-d');
-                    $dept  = (int)($_GET['dept'] ?? 0);
-                    $emp   = (int)($_GET['emp'] ?? 0);
-                    // resolve shift for late/early dynamically using employee's schedule else department default else General
-                    $w = [];
-                    if ($group==='day') {
-                        $from=$to=$date;
-                    } elseif ($group==='week') {
-                        $from = date('Y-m-d', strtotime('monday this week', strtotime($date)));
-                        $to   = date('Y-m-d', strtotime('sunday this week', strtotime($date)));
-                    } else { // month
-                        $from = date('Y-m-01', strtotime($date));
-                        $to   = date('Y-m-t', strtotime($date));
-                    }
-                    $slice = q("SELECT a.*, e.full_name, e.employee_code, d.name dept, d.id dept_id,
-                        (SELECT s2.shift_id FROM shift_schedules s2 WHERE s2.employee_id=a.employee_id
-                            AND s2.effective_date<=a.work_date AND (s2.end_date IS NULL OR s2.end_date>=a.work_date)
-                            ORDER BY s2.effective_date DESC LIMIT 1) sch_shift_id,
-                        (SELECT s3.id FROM shifts s3 WHERE s3.id=COALESCE(
-                           (SELECT s2.shift_id FROM shift_schedules s2 WHERE s2.employee_id=a.employee_id
-                              AND s2.effective_date<=a.work_date AND (s2.end_date IS NULL OR s2.end_date>=a.work_date)
-                              ORDER BY s2.effective_date DESC LIMIT 1),
-                           (SELECT ds.shift_id FROM department_shifts ds WHERE ds.department_id=e.department_id),
-                           (SELECT id FROM shifts WHERE name='General' LIMIT 1)
-                        )) eff_shift_id
-                        FROM attendance_records a
-                        JOIN employees e ON e.id=a.employee_id
-                        LEFT JOIN departments d ON d.id=e.department_id
-                        WHERE a.work_date BETWEEN ? AND ?
-                        " . ($dept?" AND e.department_id=$dept":"") . "
-                        " . ($emp?" AND a.employee_id=$emp":"") . "
-                        ORDER BY a.work_date, a.clock_in",'ss',[$from,$to]);
-                    // attach shift window + compute late/early if not stored
-                    $shifts = [];
-                    $sr = q("SELECT id,name,start_time,end_time,grace_minutes FROM shifts");
-                    foreach($sr as $s) $shifts[$s['id']]=$s;
-                    foreach($slice as &$row) {
-                        $sid = $row['eff_shift_id'] ?? $row['sch_shift_id'];
-                        $row['shift_name'] = isset($shifts[$sid])?$shifts[$sid]['name']:'';
-                        $late=$row['late_minutes']; $early=$row['early_minutes'];
-                        if (isset($shifts[$sid]) && $row['clock_in']) {
-                            $g=(int)($shifts[$sid]['grace_minutes']??5);
-                            $sst=strtotime($row['work_date'].' '.$shifts[$sid]['start_time']);
-                            $cin=strtotime($row['clock_in']);
-                            if ($cin > $sst+$g*60) $late=max($late,(int)round(($cin-($sst+$g*60))/60));
-                            if ($row['clock_out']) {
-                                $sed=strtotime($row['work_date'].' '.$shifts[$sid]['end_time']);
-                                if (strtotime($shifts[$sid]['end_time'])<=strtotime($shifts[$sid]['start_time'])) $sed=strtotime($row['work_date'].' '.$shifts[$sid]['end_time'].' +1 day');
-                                $cout=strtotime($row['clock_out']);
-                                if ($cout < $sed) $early=max($early,(int)round(($sed-$cout)/60));
-                            }
-                        }
-                        $row['late_minutes']=$late; $row['early_minutes']=$early;
-                        $row['in']=$row['clock_in']?date('H:i',strtotime($row['clock_in'])):null;
-                        $row['out']=$row['clock_out']?date('H:i',strtotime($row['clock_out'])):null;
-                    }
-                    // department list for filter
-                    $depts = q("SELECT id,name FROM departments ORDER BY name");
-                    echo json_encode(['ok'=>true,'from'=>$from,'to'=>$to,'list'=>$slice,'depts'=>$depts]); break;
-
-                /* ---------- EXPORT: Excel (CSV) ---------- */
-                case 'export_xlsx':
-                    $from=$_GET['from']??date('Y-m-01'); $to=$_GET['to']??date('Y-m-d');
-                    $rows = q("SELECT e.employee_code, e.full_name, d.name dept, a.work_date, a.clock_in, a.clock_out, a.status
-                        FROM attendance_records a JOIN employees e ON e.id=a.employee_id LEFT JOIN departments d ON d.id=e.department_id
-                        WHERE a.work_date BETWEEN ? AND ? ORDER BY a.work_date, e.full_name",'ss',[$from,$to]);
-                    header('Content-Type: text/csv; charset=UTF-8');
-                                        header('Content-Disposition: attachment; filename="attendance_'.$from.'_'.$to.'.csv"');
-                                        $out = fopen('php://output','w');
-                                        fputcsv($out, ['Emp ID','Name','Department','Date','Clock In','Clock Out','Status'], ',', '"', '\\');
-                                        foreach($rows as $r) fputcsv($out, [$r['employee_code'],$r['full_name'],$r['dept'],$r['work_date'],$r['clock_in'],$r['clock_out'],$r['status']], ',', '"', '\\');
-                                        fclose($out); exit;
-
-                /* ---------- EXPORT: PDF (minimal HTML->PDF via mpdf if available, else PHP) ---------- */
-                case 'export_pdf':
-                    $from=$_GET['from']??date('Y-m-01'); $to=$_GET['to']??date('Y-m-d');
-                    $rows = q("SELECT e.employee_code, e.full_name, d.name dept, a.work_date, a.clock_in, a.clock_out, a.status
-                        FROM attendance_records a JOIN employees e ON e.id=a.employee_id LEFT JOIN departments d ON d.id=e.department_id
-                        WHERE a.work_date BETWEEN ? AND ? ORDER BY a.work_date, e.full_name",'ss',[$from,$to]);
-                    $html = '<html><head><meta charset="utf-8"><title>Attendance Report</title>
-                        <style>body{font-family:Helvetica,Arial,sans-serif;font-size:11px}
-                        h2{color:#333}table{width:100%;border-collapse:collapse;margin-top:12px}
-                        th,td{border:1px solid #ccc;padding:5px 7px;text-align:left}th{background:#eee}</style></head>
-                        <body><h2>Attendance Report '.$from.' to '.$to.'</h2>
-                        <table><thead><tr><th>Emp ID</th><th>Name</th><th>Dept</th><th>Date</th><th>Clock In</th><th>Clock Out</th><th>Status</th></tr></thead><tbody>';
-                    foreach($rows as $r) $html.='<tr><td>'.htmlspecialchars($r['employee_code']).'</td><td>'.htmlspecialchars($r['full_name']).'</td><td>'.htmlspecialchars($r['dept']??'').'</td><td>'.$r['work_date'].'</td><td>'.htmlspecialchars($r['clock_in']??'').'</td><td>'.htmlspecialchars($r['clock_out']??'').'</td><td>'.$r['status'].'</td></tr>';
-                    $html.='</tbody></table></body></html>';
-                                $mpdfFound=false;
-                                $auto=__DIR__.'/../vendor/autoload.php';
-                                if (file_exists($auto)) { require_once $auto; if (class_exists('Mpdf\Mpdf')) { $mpdf=new \Mpdf\Mpdf(); $mpdf->WriteHTML($html); $mpdf->Output('attendance_'.$from.'_'.$to.'.pdf','D'); exit; } }
-                                // fallback: simple printable page
-                                                                header('Content-Type: text/html; charset=UTF-8');
-                                                                echo '<!doctype html><html><head><meta charset="utf-8"><title>Print</title><style>body{font-family:sans-serif;font-size:12px}th,td{border:1px solid #999;padding:4px 6px}table{border-collapse:collapse;width:100%}</style></head><body>'.$html.'<script>window.print()</script></body></html>'; exit;
-
-                /* ---------- DEPARTMENT SHIFT ASSIGN (settings) ---------- */
-                case 'dept_shifts':
-                    $r = q("SELECT ds.department_id, d.name dept, ds.shift_id, s.name shift_name FROM department_shifts ds
-                        JOIN departments d ON d.id=ds.department_id JOIN shifts s ON s.id=ds.shift_id ORDER BY d.name");
-                    $all_depts = q("SELECT * FROM departments ORDER BY name");
-                    $all_shifts = q("SELECT * FROM shifts ORDER BY start_time");
-                    echo json_encode(['ok'=>true,'list'=>$r,'depts'=>$all_depts,'shifts'=>$all_shifts]); break;
-                case 'save_dept_shift':
-                    $donept=(int)($_POST['department_id']??0); $sid=(int)($_POST['shift_id']??0);
-                    if(!$donept||!$sid) return json_encode(fail('Department and shift required'));
-                    q("INSERT INTO department_shifts (department_id,shift_id) VALUES (?,?) ON DUPLICATE KEY UPDATE shift_id=?","iii",[$donept,$sid,$sid]);
-                    audit('save_dept_shift','Attendance',"dept $donept -> shift $sid");
-                    echo json_encode(['ok'=>true]); break;
+            $from=$_GET['from']??date('Y-m-01'); $to=$_GET['to']??date('Y-m-d');
+            $r = q("SELECT e.full_name,e.employee_code,d.name dept,
+                COUNT(DISTINCT a.work_date) days_present,
+                SUM(a.status='Late') late_days,
+                SUM(a.overtime_minutes) overtime_min
+                FROM employees e LEFT JOIN departments d ON d.id=e.department_id
+                LEFT JOIN attendance_records a ON a.employee_id=e.id AND a.work_date BETWEEN ? AND ?
+                WHERE e.status!='Deactivated' GROUP BY e.id ORDER BY e.full_name",'ss',[$from,$to]);
+            echo json_encode(['ok'=>true,'list'=>$r]); break;
 
         case 'search':
             $term=$_GET['q']??'';
@@ -658,8 +547,7 @@ input:focus,select:focus,textarea:focus{border-color:#6c5ce7}
       <a data-v="dashboard" class="active" onclick="nav('dashboard')"><i class="fa-solid fa-house"></i><span class="mtext">Dashboard</span></a>
       <a data-v="ai" onclick="nav('ai')"><i class="fa-solid fa-robot"></i><span class="mtext">Attendance AI</span></a>
       <a data-v="live" onclick="nav('live')"><i class="fa-solid fa-bolt"></i><span class="mtext">Live Attendance</span></a>
-            <a data-v="punch" onclick="nav('punch')"><i class="fa-solid fa-fingerprint"></i><span class="mtext">Punch Log</span></a>
-            <a data-v="clock" onclick="nav('clock')"><i class="fa-solid fa-clock"></i><span class="mtext">Clock In/Out</span></a>
+      <a data-v="clock" onclick="nav('clock')"><i class="fa-solid fa-fingerprint"></i><span class="mtext">Clock In/Out</span></a>
       <a data-v="employees" onclick="nav('employees')"><i class="fa-solid fa-users"></i><span class="mtext">Employees</span></a>
       <a data-v="shifts" onclick="nav('shifts')"><i class="fa-solid fa-calendar-days"></i><span class="mtext">Shifts & Schedules</span></a>
       <a data-v="late" onclick="nav('late')"><i class="fa-solid fa-clock-rotate-left"></i><span class="mtext">Late Arrivals</span></a>
@@ -701,9 +589,8 @@ function fmtDate(d){if(!d)return '-';const x=new Date(d);if(isNaN(x))return d;re
 function fmtDT(d){if(!d)return '-';const x=new Date(d);if(isNaN(x))return d;return fmtDate(d)+' '+String(x.getHours()).padStart(2,'0')+':'+String(x.getMinutes()).padStart(2,'0');}
 function pill(s){const m={Present:'green',Late:'amber',Absent:'red','On Leave':'blue',Overtime:'purple',Active:'green',Approved:'green',Pending:'amber',Rejected:'red',Deactivated:'red'};return `<span class="pill ${m[s]||'violet'}">${esc(s)}</span>`;}
 async function get(action,params={}){
-  let qs='?page=api&action='+action;
-  for(const k in params){ if(params[k]===0||params[k]==='0'||params[k]) qs+='&'+k+'='+encodeURIComponent(params[k]); }
-  try{const r=await fetch(qs);const d=await r.json();if(d.error)throw new Error(d.error);return d;}catch(e){alert('Request failed: '+e.message);throw e;}
+  const url='?page=api&action='+action+(params.q?'&q='+encodeURIComponent(params.q):'')+(params.from?'&from='+params.from:'')+(params.to?'&to='+params.to:'')+(params.date?'&date='+params.date:'');
+  try{const r=await fetch(url);const d=await r.json();if(d.error)throw new Error(d.error);return d;}catch(e){alert('Request failed: '+e.message);throw e;}
 }
 async function post(action,data={}){
   const f=new URLSearchParams(data);
@@ -712,9 +599,9 @@ async function post(action,data={}){
 }
 function nav(v){
   qs('#menu a').forEach(a=>a.classList.toggle('active',a.dataset.v===v));
-  const t={dashboard:'Dashboard',ai:'Attendance AI',live:'Live Attendance',punch:'Punch Log',clock:'Clock In / Clock Out',employees:'Employees',shifts:'Shifts & Schedules',late:'Late Arrivals',absences:'Absences',leave:'Leave',overtime:'Overtime',exceptions:'Exceptions',corrections:'Corrections',analytics:'Analytics',reports:'Reports',search:'Search',notifications:'Notifications',machine:'Clocking Machine',sync:'Synchronization',audit:'Audit Log',users:'Users & Permissions',settings:'Settings'};
-    $('#pageTitle').textContent=t[v]||v;
-    const views={dashboard:viewDash,ai:viewAI,live:viewLive,punch:viewPunch,clock:viewClock,employees:viewEmps,shifts:viewShifts,late:viewLate,absences:viewAbs,leave:viewLeave,overtime:viewOT,exceptions:viewExc,corrections:viewCorr,analytics:viewAna,reports:viewRep,search:viewSearch,notifications:viewNotif,machine:viewMachine,sync:viewSync,audit:viewAudit,users:viewUsers,settings:viewSettings};
+  const t={dashboard:'Dashboard',ai:'Attendance AI',live:'Live Attendance',clock:'Clock In / Clock Out',employees:'Employees',shifts:'Shifts & Schedules',late:'Late Arrivals',absences:'Absences',leave:'Leave',overtime:'Overtime',exceptions:'Exceptions',corrections:'Corrections',analytics:'Analytics',reports:'Reports',search:'Search',notifications:'Notifications',machine:'Clocking Machine',sync:'Synchronization',audit:'Audit Log',users:'Users & Permissions',settings:'Settings'};
+  $('#pageTitle').textContent=t[v]||v;
+  const views={dashboard:viewDash,ai:viewAI,live:viewLive,clock:viewClock,employees:viewEmps,shifts:viewShifts,late:viewLate,absences:viewAbs,leave:viewLeave,overtime:viewOT,exceptions:viewExc,corrections:viewCorr,analytics:viewAna,reports:viewRep,search:viewSearch,notifications:viewNotif,machine:viewMachine,sync:viewSync,audit:viewAudit,users:viewUsers,settings:viewSettings};
   (views[v]||viewDash)();
 }
 function toggleSide(){$('#side').classList.toggle('collapsed');}
@@ -789,29 +676,6 @@ async function viewLive(){
         <tbody>${not.map(e=>`<tr><td><b>${esc(e.full_name)}</b></td><td>${esc(e.dept||'-')}</td></tr>`).join('')}</tbody></table></div>
     </div>`;
 }
-
-/* ---------- PUNCH LOG: day/week/month ---------- */
-let punchGroup='week';let punchDate=new Date().toISOString().slice(0,10);let punchDept=0;let punchEmp=0;
-async function viewPunch(){
-  $('#view').innerHTML='<p class="empty">Loading punch log...</p>';
-  const d=await get('punch_log',{group:punchGroup,date:punchDate,dept:punchDept,emp:punchEmp});
-  $('#view').innerHTML=`
-    <div class="card">
-      <div class="filter-row">
-        ${['day','week','month'].map(g=>`<button class="tab ${punchGroup===g?'active':''}" onclick="pG('${g}')">${g==='day'?'Day':g==='week'?'Week':'Month'}</button>`).join('')}
-        <input type="date" id="pDate" value="${esc(punchDate)}" onchange="pDateSet()">
-        <select id="pDept" onchange="pDeptSet()"><option value="0">All Departments</option>${(d.depts||[]).map(x=>`<option value="${x.id}" ${punchDept==x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
-      </div>
-      <p style="color:#8a97ab;margin-bottom:10px;font-size:12.5px">Range: ${esc(d.from)} → ${esc(d.to)} (${d.list.length} punches)</p>
-      <table><thead><tr><th>Date</th><th>Emp ID</th><th>Name</th><th>Dept</th><th>Shift</th><th>Clock In</th><th>Clock Out</th><th>Late</th><th>Early</th><th>Status</th></tr></thead>
-      <tbody>${(d.list||[]).map(r=>`<tr><td>${fmtDate(r.work_date)}</td><td>${esc(r.employee_code)}</td><td><b>${esc(r.full_name)}</b></td><td>${esc(r.dept||'-')}</td><td>${esc(r.shift_name||'-')}</td><td>${r.in||'-'}</td><td>${r.out||'-'}</td><td>${r.late_minutes?`<span style="color:#f39c12;font-weight:700">${r.late_minutes}min</span>`:'-'}</td><td>${r.early_minutes?`<span style="color:#74b9ff;font-weight:700">${r.early_minutes}min</span>`:'-'}</td><td>${pill(r.status)}</td></tr>`).join('')||'<tr><td colspan="10" class="empty">No punches in range</td></tr>'}</tbody></table>
-      <div style="margin-top:14px;display:flex;gap:10px">
-        <a class="btn sm ghost" href="?page=api&action=export_xlsx&from=${esc(d.from)}&to=${esc(d.to)}"><i class="fa-solid fa-file-excel"></i> Export Excel (CSV)</a>
-        <a class="btn sm green" href="?page=api&action=export_pdf&from=${esc(d.from)}&to=${esc(d.to)}"><i class="fa-solid fa-file-pdf"></i> Export PDF</a>
-      </div>
-    </div>`;
-}
-function pG(g){punchGroup=g;viewPunch();}function pDateSet(){punchDate=$('#pDate').value;viewPunch();}function pDeptSet(){punchDept=$('#pDept').value;viewPunch();}
 
 /* ---------- CLOCK IN/OUT ---------- */
 async function viewClock(){
@@ -939,14 +803,10 @@ async function viewAna(){
 /* ---------- REPORTS ---------- */
 async function viewRep(){
   const d=await get('reports');
-  let rf=new Date().toISOString().slice(0,7)+'-01', rt=new Date().toISOString().slice(0,10);
-  if($('#repFrom')){$('#repFrom').value=$('#repFrom').value||rf;}
   $('#view').innerHTML=`<div class="card"><div class="filter-row">
-      <input type="date" id="repFrom" value="${$('#repFrom')?($('#repFrom').value||rf):rf}">
-      <input type="date" id="repTo" value="${$('#repTo')?($('#repTo').value||rt):rt}">
-      <button class="btn ghost" onclick="viewRep()">Refresh</button>
-      <a class="btn sm ghost" href="?page=api&action=export_xlsx&from=${$('#repFrom')?($('#repFrom').value||rf):rf}&to=${$('#repTo')?($('#repTo').value||rt):rt}"><i class="fa-solid fa-file-excel"></i> Excel</a>
-      <a class="btn sm green" href="?page=api&action=export_pdf&from=${$('#repFrom')?($('#repFrom').value||rf):rf}&to=${$('#repTo')?($('#repTo').value||rt):rt}"><i class="fa-solid fa-file-pdf"></i> PDF</a></div>
+      <input type="date" id="repFrom" value="${new Date().toISOString().slice(0,7)+'-01'}">
+      <input type="date" id="repTo" value="${new Date().toISOString().slice(0,10)}">
+      <button class="btn ghost" onclick="viewRep()">Refresh</button></div>
     <h3 style="margin-bottom:12px;color:#37455e">📄 Attendance Report</h3>
     <table><thead><tr><th>Employee</th><th>Code</th><th>Dept</th><th>Days Present</th><th>Late</th><th>OT (min)</th></tr></thead>
     <tbody>${(d.list||[]).map(r=>`<tr><td><b>${esc(r.full_name)}</b></td><td>${esc(r.employee_code)}</td><td>${esc(r.dept||'-')}</td><td>${r.days_present}</td><td>${r.late_days}</td><td>${r.overtime_min}</td></tr>`).join('')}</tbody></table></div>`;
@@ -976,17 +836,7 @@ async function viewAudit(){const d=await get('audit_log');$('#view').innerHTML=`
 async function viewUsers(){const d=await get('users');$('#view').innerHTML=`<div class="card"><h3 style="margin-bottom:12px">👥 Users & Permissions</h3><table><thead><tr><th>User</th><th>Role</th><th>Status</th></tr></thead><tbody>${(d.list||[]).map(u=>`<tr><td><b>${esc(u.full_name)}</b> <span style="color:#8a97ab;font-size:12px">@${esc(u.username)}</span></td><td>Role #${u.role_id}</td><td>${pill(u.status)}</td></tr>`).join('')}</tbody></table></div>`;}
 
 /* ---------- SETTINGS ---------- */
-async function viewSettings(){
-  const d=await get('settings');
-  const ds=await get('dept_shifts');
-  $('#view').innerHTML=`<div class="card"><h3 style="margin-bottom:12px">⚙️ Settings</h3><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${(d.list||[]).map(s=>`<tr><td><b>${esc(s.setting_key||s.key||'-')}</b></td><td>${esc(s.setting_value||s.value||'-')}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No settings configured</td></tr>'}</tbody></table></div>
-  <div class="card"><h3 style="margin-bottom:12px">🗂️ Department Shifts (default shift per department — used for late/early)</h3>
-    <div class="filter-row"><select id="dsDept"><option value="">Select department...</option>${(ds.depts||[]).map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
-    <select id="dsShift"><option value="">Select shift...</option>${(ds.shifts||[]).map(x=>`<option value="${x.id}">${esc(x.name)} (${x.start_time.slice(0,5)})</option>`).join('')}</select>
-    <button class="btn" onclick="saveDeptShift()">Assign</button></div>
-    <table><thead><tr><th>Department</th><th>Default Shift</th></tr></thead><tbody>${(ds.list||[]).map(x=>`<tr><td><b>${esc(x.dept)}</b></td><td>${esc(x.shift_name)}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No department shifts set</td></tr>'}</tbody></table></div>`;
-}
-async function saveDeptShift(){const dept=$('#dsDept').value,sh=$('#dsShift').value;if(!dept||!sh){alert('Select department and shift');return;}await post('save_dept_shift',{department_id:dept,shift_id:sh});alert('Department shift saved');viewSettings();}
+async function viewSettings(){const d=await get('settings');$('#view').innerHTML=`<div class="card"><h3 style="margin-bottom:12px">⚙️ Settings</h3><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>${(d.list||[]).map(s=>`<tr><td><b>${esc(s.setting_key||s.key||'-')}</b></td><td>${esc(s.setting_value||s.value||'-')}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No settings configured</td></tr>'}</tbody></table></div>`;}
 
 /* ---------- MODAL ---------- */
 function openModal(html){const m=document.createElement('div');m.className='modal-bg';m.id='mdl';m.innerHTML=`<div class="modal">${html}</div>`;m.onclick=e=>{if(e.target===m)closeModal();};document.body.appendChild(m);}

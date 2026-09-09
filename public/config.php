@@ -8,7 +8,7 @@ define('DB_PORT', 3306);
 
 // Application Settings
 define('APP_NAME', 'Enterprise Automation Platform');
-define('APP_URL', 'http://192.168.100.98');
+define('APP_URL', 'http://192.168.0.184');
 define('APP_ENV', 'development');
 define('SESSION_TIMEOUT', 3600); // 1 hour
 

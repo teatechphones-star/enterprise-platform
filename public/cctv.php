@@ -137,7 +137,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'api') {
             $department = sanitize($conn, $input['department'] ?? '');
             $nvr_device = sanitize($conn, $input['nvr_device'] ?? '');
             $ip_address = sanitize($conn, $input['ip_address'] ?? '');
-            $port = sanitize($conn, $input['port'] ?? '');
+            $port = intval($input['port'] ?? 554);
             $camera_type = sanitize($conn, $input['camera_type'] ?? 'IP');
             $status = sanitize($conn, $input['status'] ?? 'online');
             $recording_status = sanitize($conn, $input['recording_status'] ?? 'recording');
@@ -865,7 +865,7 @@ tr:hover td { background:rgba(108,92,231,0.03); }
 // ========== GLOBALS ==========
 let currentView = 'dashboard';
 let liveInterval = null;
-const API = 'index.php?page=api&action=';
+const API = 'cctv.php?page=api&action=';
 
 // ========== UTILITIES ==========
 async function api(action, params = {}, body = null) {

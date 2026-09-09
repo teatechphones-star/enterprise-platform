@@ -12,7 +12,7 @@ class Auth
             "SELECT u.*, r.name AS role_name
              FROM users u
              LEFT JOIN roles r ON r.id = u.role_id
-             WHERE u.username = :u AND u.is_active = 1",
+             WHERE u.username = :u AND u.status = 'active'",
             ['u' => $username]
         );
         if (!$user || !password_verify($password, $user['password_hash'])) {
